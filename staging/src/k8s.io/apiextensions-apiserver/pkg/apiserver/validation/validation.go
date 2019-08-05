@@ -29,12 +29,12 @@ func NewSchemaValidator(customResourceValidation *apiextensions.CustomResourceVa
 	// Convert CRD schema to openapi schema
 	openapiSchema := &spec.Schema{}
 	if customResourceValidation != nil {
-		// WARNING: do not replace this with Structural.ToGoOpenAPI until it supports nullable.
+		// TODO: replace with NewStructural(...).ToGoOpenAPI
 		if err := ConvertJSONSchemaProps(customResourceValidation.OpenAPIV3Schema, openapiSchema); err != nil {
 			return nil, nil, err
 		}
 	}
-	return validate.NewSchemaValidator(openapiSchema, nil, "", strfmt.Default), openapiSchema, nil
+	return validate.NewSchemaValidator(openapiSchema, nil, "", strfmt.Default, validate.DisableObjectArrayTypeCheck(true)), openapiSchema, nil
 }
 
 // ValidateCustomResource validates the Custom Resource against the schema in the CustomResourceDefinition.
@@ -76,9 +76,7 @@ func ConvertJSONSchemaPropsWithPostProcess(in *apiextensions.JSONSchemaProps, ou
 		out.VendorExtensible.AddExtension("x-kubernetes-int-or-string", true)
 		out.Type = spec.StringOrArray{"integer", "string"}
 	}
-	if out.Type != nil && in.Nullable {
-		out.Type = append(out.Type, "null")
-	}
+	out.Nullable = in.Nullable
 	out.Format = in.Format
 	out.Title = in.Title
 	out.Maximum = in.Maximum

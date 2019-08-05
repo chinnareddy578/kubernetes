@@ -643,7 +643,10 @@ func printPod(pod *api.Pod, options printers.PrintOptions) ([]metav1.TableRow, e
 	if options.Wide {
 		nodeName := pod.Spec.NodeName
 		nominatedNodeName := pod.Status.NominatedNodeName
-		podIP := pod.Status.PodIP
+		podIP := ""
+		if len(pod.Status.PodIPs) > 0 {
+			podIP = pod.Status.PodIPs[0].IP
+		}
 
 		if podIP == "" {
 			podIP = "<none>"
@@ -1693,7 +1696,7 @@ func printConfigMap(obj *api.ConfigMap, options printers.PrintOptions) ([]metav1
 	row := metav1beta1.TableRow{
 		Object: runtime.RawExtension{Object: obj},
 	}
-	row.Cells = append(row.Cells, obj.Name, int64(len(obj.Data)), translateTimestampSince(obj.CreationTimestamp))
+	row.Cells = append(row.Cells, obj.Name, int64(len(obj.Data)+len(obj.BinaryData)), translateTimestampSince(obj.CreationTimestamp))
 	return []metav1beta1.TableRow{row}, nil
 }
 

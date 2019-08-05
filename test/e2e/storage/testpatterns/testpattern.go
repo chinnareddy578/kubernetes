@@ -18,6 +18,7 @@ package testpatterns
 
 import (
 	"k8s.io/api/core/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 )
 
@@ -43,6 +44,8 @@ var (
 	PreprovisionedPV TestVolType = "PreprovisionedPV"
 	// DynamicPV represents a volume type for dynamic provisioned Persistent Volume
 	DynamicPV TestVolType = "DynamicPV"
+	// CSIInlineVolume represents a volume type that is defined inline and provided by a CSI driver.
+	CSIInlineVolume TestVolType = "CSIInlineVolume"
 )
 
 // TestSnapshotType represents a snapshot type to be tested in a TestSuite
@@ -55,12 +58,14 @@ var (
 
 // TestPattern represents a combination of parameters to be tested in a TestSuite
 type TestPattern struct {
-	Name         string                  // Name of TestPattern
-	FeatureTag   string                  // featureTag for the TestSuite
-	VolType      TestVolType             // Volume type of the volume
-	FsType       string                  // Fstype of the volume
-	VolMode      v1.PersistentVolumeMode // PersistentVolumeMode of the volume
-	SnapshotType TestSnapshotType        // Snapshot type of the snapshot
+	Name           string                      // Name of TestPattern
+	FeatureTag     string                      // featureTag for the TestSuite
+	VolType        TestVolType                 // Volume type of the volume
+	FsType         string                      // Fstype of the volume
+	VolMode        v1.PersistentVolumeMode     // PersistentVolumeMode of the volume
+	SnapshotType   TestSnapshotType            // Snapshot type of the snapshot
+	BindingMode    storagev1.VolumeBindingMode // VolumeBindingMode of the volume
+	AllowExpansion bool                        // AllowVolumeExpansion flag of the StorageClass
 }
 
 var (
@@ -195,7 +200,7 @@ var (
 		VolType: PreprovisionedPV,
 		VolMode: v1.PersistentVolumeBlock,
 	}
-	// BlockVolModeDynamicPV is TestPattern for "Dynamic PV (block)(immediate bind)"
+	// BlockVolModeDynamicPV is TestPattern for "Dynamic PV (block)"
 	BlockVolModeDynamicPV = TestPattern{
 		Name:    "Dynamic PV (block volmode)",
 		VolType: DynamicPV,
@@ -208,5 +213,23 @@ var (
 	DynamicSnapshot = TestPattern{
 		Name:         "Dynamic Snapshot",
 		SnapshotType: DynamicCreatedSnapshot,
+	}
+
+	// Definitions for volume expansion case
+
+	// DefaultFsDynamicPVAllowExpansion is TestPattern for "Dynamic PV (default fs)(allowExpansion)"
+	DefaultFsDynamicPVAllowExpansion = TestPattern{
+		Name:           "Dynamic PV (default fs)(allowExpansion)",
+		VolType:        DynamicPV,
+		BindingMode:    storagev1.VolumeBindingWaitForFirstConsumer,
+		AllowExpansion: true,
+	}
+	// BlockVolModeDynamicPVAllowExpansion is TestPattern for "Dynamic PV (block volmode)(allowExpansion)"
+	BlockVolModeDynamicPVAllowExpansion = TestPattern{
+		Name:           "Dynamic PV (block volmode)(allowExpansion)",
+		VolType:        DynamicPV,
+		VolMode:        v1.PersistentVolumeBlock,
+		BindingMode:    storagev1.VolumeBindingWaitForFirstConsumer,
+		AllowExpansion: true,
 	}
 )

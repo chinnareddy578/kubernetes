@@ -43,7 +43,6 @@ const (
 	eventReasonManualChange = "LoadBalancerManualChange"
 	eventMsgFirewallChange  = "Firewall change required by network admin"
 	errPrefixGetTargetPool  = "error getting load balancer's target pool:"
-	errStrLbNoHosts         = "Cannot EnsureLoadBalancer() with no hosts"
 	wrongTier               = "SupremeLuxury"
 	errStrUnsupportedTier   = "unsupported network tier: \"" + wrongTier + "\""
 )
@@ -60,12 +59,6 @@ func fakeLoadbalancerService(lbType string) *v1.Service {
 			Ports:           []v1.ServicePort{{Protocol: v1.ProtocolTCP, Port: int32(123)}},
 		},
 	}
-}
-
-func fakeLoadbalancerServiceWithNEGs(lbType string) *v1.Service {
-	svc := fakeLoadbalancerService(lbType)
-	svc.Annotations[NEGAnnotation] = "{\"ilb\": true}"
-	return svc
 }
 
 var (

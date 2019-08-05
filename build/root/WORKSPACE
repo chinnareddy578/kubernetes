@@ -37,15 +37,15 @@ versions.check(minimum_bazel_version = "0.23.0")
 
 http_archive(
     name = "io_k8s_repo_infra",
-    sha256 = "4a8384320fba401cbf21fef177aa113ed8fe35952ace98e00b796cac87ae7868",
-    strip_prefix = "repo-infra-df02ded38f9506e5bbcbf21702034b4fef815f2f",
-    urls = mirror("https://github.com/kubernetes/repo-infra/archive/df02ded38f9506e5bbcbf21702034b4fef815f2f.tar.gz"),
+    sha256 = "462dcc769f29e9eee16499edb818e2fc2ffc24efea28300d53bbc098d27d322c",
+    strip_prefix = "repo-infra-f85734f673056977d8ba04b0386394b684ca2acb",
+    urls = mirror("https://github.com/kubernetes/repo-infra/archive/f85734f673056977d8ba04b0386394b684ca2acb.tar.gz"),
 )
 
 http_archive(
     name = "io_bazel_rules_go",
-    sha256 = "ce1afed0075e01bd883cfbafbbcc26bfab392eb24854e07a20be78ab13f9e15e",
-    urls = mirror("https://github.com/bazelbuild/rules_go/releases/download/0.17.7/rules_go-0.17.7.tar.gz"),
+    sha256 = "38113392bac83252d2e6450b0056e41f35b2469903e319688883598ce38f0377",
+    urls = mirror("https://github.com/bazelbuild/rules_go/releases/download/0.17.8/rules_go-0.17.8.tar.gz"),
 )
 
 load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_dependencies")
@@ -53,7 +53,7 @@ load("@io_bazel_rules_go//go:deps.bzl", "go_register_toolchains", "go_rules_depe
 go_rules_dependencies()
 
 go_register_toolchains(
-    go_version = "1.12.6",
+    go_version = "1.12.7",
 )
 
 http_archive(

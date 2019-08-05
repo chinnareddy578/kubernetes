@@ -30,7 +30,7 @@ import (
 
 	"k8s.io/client-go/tools/cache"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	nodepkg "k8s.io/kubernetes/pkg/controller/nodelifecycle"
@@ -40,11 +40,11 @@ import (
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 	e2esset "k8s.io/kubernetes/test/e2e/framework/statefulset"
 	testutils "k8s.io/kubernetes/test/utils"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 )
 
 const (
@@ -88,6 +88,7 @@ func podOnNode(podName, nodeName string, image string) *v1.Pod {
 				{
 					Name:  podName,
 					Image: image,
+					Args:  []string{"serve-hostname"},
 					Ports: []v1.ContainerPort{{ContainerPort: 9376}},
 				},
 			},
@@ -186,7 +187,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					cache.ResourceEventHandlerFuncs{
 						UpdateFunc: func(oldObj, newObj interface{}) {
 							n, ok := newObj.(*v1.Node)
-							gomega.Expect(ok).To(gomega.Equal(true))
+							framework.ExpectEqual(ok, true)
 							newNode <- n
 
 						},
@@ -245,7 +246,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 			numNodes, err := e2enode.TotalRegistered(f.ClientSet)
 			framework.ExpectNoError(err)
 			replicas := int32(numNodes)
-			common.NewRCByName(c, ns, name, replicas, nil)
+			common.NewRCByName(c, ns, name, replicas, nil, nil)
 			err = e2epod.VerifyPods(c, ns, name, true, replicas)
 			framework.ExpectNoError(err, "Each pod should start running and responding")
 
@@ -312,7 +313,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 			numNodes, err := e2enode.TotalRegistered(f.ClientSet)
 			framework.ExpectNoError(err)
 			replicas := int32(numNodes)
-			common.NewRCByName(c, ns, name, replicas, &gracePeriod)
+			common.NewRCByName(c, ns, name, replicas, &gracePeriod, []string{"serve-hostname"})
 			err = e2epod.VerifyPods(c, ns, name, true, replicas)
 			framework.ExpectNoError(err, "Each pod should start running and responding")
 
@@ -335,7 +336,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 			framework.TestUnderTemporaryNetworkFailure(c, ns, node, func() {
 				e2elog.Logf("Waiting for pod %s to be removed", pods.Items[0].Name)
 				err := framework.WaitForRCPodToDisappear(c, ns, name, pods.Items[0].Name)
-				gomega.Expect(err).To(gomega.Equal(wait.ErrWaitTimeout), "Pod was not deleted during network partition.")
+				framework.ExpectEqual(err, wait.ErrWaitTimeout, "Pod was not deleted during network partition.")
 
 				ginkgo.By(fmt.Sprintf("verifying that there are %v running pods during partition", replicas))
 				_, err = e2epod.PodsCreated(c, ns, name, replicas)
@@ -360,7 +361,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 			// TODO(foxish): Re-enable testing on gce after kubernetes#56787 is fixed.
 			framework.SkipUnlessProviderIs("gke")
 			ginkgo.By("creating service " + headlessSvcName + " in namespace " + f.Namespace.Name)
-			headlessService := framework.CreateServiceSpec(headlessSvcName, "", true, labels)
+			headlessService := e2eservice.CreateServiceSpec(headlessSvcName, "", true, labels)
 			_, err := f.ClientSet.CoreV1().Services(f.Namespace.Name).Create(headlessService)
 			framework.ExpectNoError(err)
 			c = f.ClientSet
@@ -409,7 +410,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 			framework.TestUnderTemporaryNetworkFailure(c, ns, node, func() {
 				e2elog.Logf("Checking that the NodeController does not force delete stateful pods %v", pod.Name)
 				err := e2epod.WaitTimeoutForPodNoLongerRunningInNamespace(c, pod.Name, ns, 10*time.Minute)
-				gomega.Expect(err).To(gomega.Equal(wait.ErrWaitTimeout), "Pod was not deleted during network partition.")
+				framework.ExpectEqual(err, wait.ErrWaitTimeout, "Pod was not deleted during network partition.")
 			})
 
 			e2elog.Logf("Waiting %v for node %s to be ready once temporary network failure ends", resizeNodeReadyTimeout, node.Name)
@@ -453,7 +454,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 			framework.TestUnderTemporaryNetworkFailure(c, ns, node, func() {
 				e2elog.Logf("Waiting for pod %s to be removed", pods.Items[0].Name)
 				err := e2epod.WaitForPodToDisappear(c, ns, pods.Items[0].Name, label, 20*time.Second, 10*time.Minute)
-				gomega.Expect(err).To(gomega.Equal(wait.ErrWaitTimeout), "Pod was not deleted during network partition.")
+				framework.ExpectEqual(err, wait.ErrWaitTimeout, "Pod was not deleted during network partition.")
 
 				ginkgo.By(fmt.Sprintf("verifying that there are now %v running pods", parallelism))
 				_, err = e2epod.PodsCreatedByLabel(c, ns, job.Name, parallelism, label)
@@ -565,7 +566,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					cache.ResourceEventHandlerFuncs{
 						UpdateFunc: func(oldObj, newObj interface{}) {
 							n, ok := newObj.(*v1.Node)
-							gomega.Expect(ok).To(gomega.Equal(true))
+							framework.ExpectEqual(ok, true)
 							newNode <- n
 
 						},

@@ -56,7 +56,7 @@ var _ = SIGDescribe("Multi-AZ Clusters", func() {
 	})
 
 	ginkgo.It("should spread the pods of a replication controller across zones", func() {
-		SpreadRCOrFail(f, int32((2*zoneCount)+1), image)
+		SpreadRCOrFail(f, int32((2*zoneCount)+1), image, []string{"serve-hostname"})
 	})
 })
 
@@ -113,7 +113,7 @@ func SpreadServiceOrFail(f *framework.Framework, replicaCount int, image string)
 	// Now make sure they're spread across zones
 	zoneNames, err := framework.GetClusterZones(f.ClientSet)
 	framework.ExpectNoError(err)
-	gomega.Expect(checkZoneSpreading(f.ClientSet, pods, zoneNames.List())).To(gomega.Equal(true))
+	checkZoneSpreading(f.ClientSet, pods, zoneNames.List())
 }
 
 // Find the name of the zone in which a Node is running
@@ -146,7 +146,7 @@ func getZoneNameForPod(c clientset.Interface, pod v1.Pod) (string, error) {
 
 // Determine whether a set of pods are approximately evenly spread
 // across a given set of zones
-func checkZoneSpreading(c clientset.Interface, pods *v1.PodList, zoneNames []string) (bool, error) {
+func checkZoneSpreading(c clientset.Interface, pods *v1.PodList, zoneNames []string) {
 	podsPerZone := make(map[string]int)
 	for _, zoneName := range zoneNames {
 		podsPerZone[zoneName] = 0
@@ -172,12 +172,11 @@ func checkZoneSpreading(c clientset.Interface, pods *v1.PodList, zoneNames []str
 	gomega.Expect(minPodsPerZone).To(gomega.BeNumerically("~", maxPodsPerZone, 1),
 		"Pods were not evenly spread across zones.  %d in one zone and %d in another zone",
 		minPodsPerZone, maxPodsPerZone)
-	return true, nil
 }
 
 // SpreadRCOrFail Check that the pods comprising a replication
 // controller get spread evenly across available zones
-func SpreadRCOrFail(f *framework.Framework, replicaCount int32, image string) {
+func SpreadRCOrFail(f *framework.Framework, replicaCount int32, image string, args []string) {
 	name := "ubelite-spread-rc-" + string(uuid.NewUUID())
 	ginkgo.By(fmt.Sprintf("Creating replication controller %s", name))
 	controller, err := f.ClientSet.CoreV1().ReplicationControllers(f.Namespace.Name).Create(&v1.ReplicationController{
@@ -199,6 +198,7 @@ func SpreadRCOrFail(f *framework.Framework, replicaCount int32, image string) {
 						{
 							Name:  name,
 							Image: image,
+							Args:  args,
 							Ports: []v1.ContainerPort{{ContainerPort: 9376}},
 						},
 					},
@@ -227,5 +227,5 @@ func SpreadRCOrFail(f *framework.Framework, replicaCount int32, image string) {
 	// Now make sure they're spread across zones
 	zoneNames, err := framework.GetClusterZones(f.ClientSet)
 	framework.ExpectNoError(err)
-	gomega.Expect(checkZoneSpreading(f.ClientSet, pods, zoneNames.List())).To(gomega.Equal(true))
+	checkZoneSpreading(f.ClientSet, pods, zoneNames.List())
 }

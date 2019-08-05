@@ -38,7 +38,6 @@ import (
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 )
 
 const (
@@ -79,7 +78,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -136,7 +135,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
 		resourceQuota.Spec.Hard[v1.ResourceSecrets] = resource.MustParse(hardSecrets)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -177,7 +176,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -283,7 +282,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -326,7 +325,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -365,7 +364,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -404,7 +403,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -446,7 +445,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName := "test-quota"
 		resourceQuota := newTestResourceQuota(quotaName)
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -500,7 +499,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		// in order to make sure the resourcequota controller knows this resource, we create one test
 		// resourcequota object, and triggering updates on it until the status is updated.
 		quotaName := "quota-for-" + testcrd.Crd.Spec.Names.Plural
-		resourceQuota, err := createResourceQuota(f.ClientSet, f.Namespace.Name, &v1.ResourceQuota{
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, &v1.ResourceQuota{
 			ObjectMeta: metav1.ObjectMeta{Name: quotaName},
 			Spec: v1.ResourceQuotaSpec{
 				Hard: v1.ResourceList{
@@ -508,6 +507,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 				},
 			},
 		})
+		framework.ExpectNoError(err)
 		err = updateResourceQuotaUntilUsageAppears(f.ClientSet, f.Namespace.Name, quotaName, v1.ResourceName(countResourceName))
 		framework.ExpectNoError(err)
 		err = f.ClientSet.CoreV1().ResourceQuotas(f.Namespace.Name).Delete(quotaName, nil)
@@ -519,9 +519,9 @@ var _ = SIGDescribe("ResourceQuota", func() {
 
 		ginkgo.By("Creating a ResourceQuota")
 		quotaName = "test-quota"
-		resourceQuota = newTestResourceQuota(quotaName)
+		resourceQuota := newTestResourceQuota(quotaName)
 		resourceQuota.Spec.Hard[v1.ResourceName(countResourceName)] = resource.MustParse("1")
-		resourceQuota, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
+		_, err = createResourceQuota(f.ClientSet, f.Namespace.Name, resourceQuota)
 		framework.ExpectNoError(err)
 
 		ginkgo.By("Ensuring resource quota status is calculated")
@@ -770,22 +770,22 @@ var _ = SIGDescribe("ResourceQuota", func() {
 		ginkgo.By("Getting a ResourceQuota")
 		resourceQuotaResult, err := client.CoreV1().ResourceQuotas(ns).Get(quotaName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(resourceQuotaResult.Spec.Hard[v1.ResourceCPU]).To(gomega.Equal(resource.MustParse("1")))
-		gomega.Expect(resourceQuotaResult.Spec.Hard[v1.ResourceMemory]).To(gomega.Equal(resource.MustParse("500Mi")))
+		framework.ExpectEqual(resourceQuotaResult.Spec.Hard[v1.ResourceCPU], resource.MustParse("1"))
+		framework.ExpectEqual(resourceQuotaResult.Spec.Hard[v1.ResourceMemory], resource.MustParse("500Mi"))
 
 		ginkgo.By("Updating a ResourceQuota")
 		resourceQuota.Spec.Hard[v1.ResourceCPU] = resource.MustParse("2")
 		resourceQuota.Spec.Hard[v1.ResourceMemory] = resource.MustParse("1Gi")
 		resourceQuotaResult, err = client.CoreV1().ResourceQuotas(ns).Update(resourceQuota)
 		framework.ExpectNoError(err)
-		gomega.Expect(resourceQuotaResult.Spec.Hard[v1.ResourceCPU]).To(gomega.Equal(resource.MustParse("2")))
-		gomega.Expect(resourceQuotaResult.Spec.Hard[v1.ResourceMemory]).To(gomega.Equal(resource.MustParse("1Gi")))
+		framework.ExpectEqual(resourceQuotaResult.Spec.Hard[v1.ResourceCPU], resource.MustParse("2"))
+		framework.ExpectEqual(resourceQuotaResult.Spec.Hard[v1.ResourceMemory], resource.MustParse("1Gi"))
 
 		ginkgo.By("Verifying a ResourceQuota was modified")
 		resourceQuotaResult, err = client.CoreV1().ResourceQuotas(ns).Get(quotaName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(resourceQuotaResult.Spec.Hard[v1.ResourceCPU]).To(gomega.Equal(resource.MustParse("2")))
-		gomega.Expect(resourceQuotaResult.Spec.Hard[v1.ResourceMemory]).To(gomega.Equal(resource.MustParse("1Gi")))
+		framework.ExpectEqual(resourceQuotaResult.Spec.Hard[v1.ResourceCPU], resource.MustParse("2"))
+		framework.ExpectEqual(resourceQuotaResult.Spec.Hard[v1.ResourceMemory], resource.MustParse("1Gi"))
 
 		ginkgo.By("Deleting a ResourceQuota")
 		err = deleteResourceQuota(client, ns, quotaName)
@@ -793,7 +793,7 @@ var _ = SIGDescribe("ResourceQuota", func() {
 
 		ginkgo.By("Verifying the deleted ResourceQuota")
 		_, err = client.CoreV1().ResourceQuotas(ns).Get(quotaName, metav1.GetOptions{})
-		gomega.Expect(errors.IsNotFound(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(errors.IsNotFound(err), true)
 	})
 })
 
@@ -983,7 +983,7 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 	ginkgo.It("should verify ResourceQuota's priority class scope (quota set to pod count: 1) against a pod with same priority class.", func() {
 
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass1"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("1")
@@ -1022,7 +1022,7 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 	ginkgo.It("should verify ResourceQuota's priority class scope (quota set to pod count: 1) against 2 pods with same priority class.", func() {
 
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass2"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("1")
@@ -1067,7 +1067,7 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 	ginkgo.It("should verify ResourceQuota's priority class scope (quota set to pod count: 1) against 2 pods with different priority class.", func() {
 
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass3"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("1")
@@ -1113,10 +1113,10 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 
 	ginkgo.It("should verify ResourceQuota's multiple priority class scope (quota set to pod count: 2) against 2 pods with same priority classes.", func() {
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass5"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		_, err = f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass6"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("2")
@@ -1168,7 +1168,7 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 	ginkgo.It("should verify ResourceQuota's priority class scope (quota set to pod count: 1) against a pod with different priority class (ScopeSelectorOpNotIn).", func() {
 
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass7"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("1")
@@ -1202,7 +1202,7 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 	ginkgo.It("should verify ResourceQuota's priority class scope (quota set to pod count: 1) against a pod with different priority class (ScopeSelectorOpExists).", func() {
 
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass8"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("1")
@@ -1241,7 +1241,7 @@ var _ = SIGDescribe("ResourceQuota [Feature:PodPriority]", func() {
 	ginkgo.It("should verify ResourceQuota's priority class scope (cpu, memory quota set) against a pod with same priority class.", func() {
 
 		_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: "pclass9"}, Value: int32(1000)})
-		gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 
 		hard := v1.ResourceList{}
 		hard[v1.ResourcePods] = resource.MustParse("1")

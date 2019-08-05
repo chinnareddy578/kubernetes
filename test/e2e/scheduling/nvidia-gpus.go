@@ -168,17 +168,30 @@ func SetupNVIDIAGPUNode(f *framework.Framework, setupResourceGatherer bool) *fra
 	return rsgather
 }
 
+func getGPUsPerPod() int64 {
+	var gpusPerPod int64
+	gpuPod := makeCudaAdditionDevicePluginTestPod()
+	for _, container := range gpuPod.Spec.Containers {
+		if val, ok := container.Resources.Limits[gpuResourceName]; ok {
+			gpusPerPod += (&val).Value()
+		}
+	}
+	return gpusPerPod
+}
+
 func testNvidiaGPUs(f *framework.Framework) {
 	rsgather := SetupNVIDIAGPUNode(f, true)
-	e2elog.Logf("Creating as many pods as there are Nvidia GPUs and have the pods run a CUDA app")
+	gpuPodNum := getGPUsAvailable(f) / getGPUsPerPod()
+	e2elog.Logf("Creating %d pods and have the pods run a CUDA app", gpuPodNum)
 	podList := []*v1.Pod{}
-	for i := int64(0); i < getGPUsAvailable(f); i++ {
+	for i := int64(0); i < gpuPodNum; i++ {
 		podList = append(podList, f.PodClient().Create(makeCudaAdditionDevicePluginTestPod()))
 	}
 	e2elog.Logf("Wait for all test pods to succeed")
 	// Wait for all pods to succeed
 	for _, pod := range podList {
 		f.PodClient().WaitForSuccess(pod.Name, 5*time.Minute)
+		logContainers(f, pod)
 	}
 
 	e2elog.Logf("Stopping ResourceUsageGather")
@@ -187,6 +200,14 @@ func testNvidiaGPUs(f *framework.Framework) {
 	summary, err := rsgather.StopAndSummarize([]int{50, 90, 100}, constraints)
 	f.TestSummaries = append(f.TestSummaries, summary)
 	framework.ExpectNoError(err, "getting resource usage summary")
+}
+
+func logContainers(f *framework.Framework, pod *v1.Pod) {
+	for _, container := range pod.Spec.Containers {
+		logs, err := e2epod.GetPodLogs(f.ClientSet, f.Namespace.Name, pod.Name, container.Name)
+		framework.ExpectNoError(err, "Should be able to get container logs for container: %s", container.Name)
+		e2elog.Logf("Got container logs for %s:\n%v", container.Name, logs)
+	}
 }
 
 var _ = SIGDescribe("[Feature:GPUDevicePlugin]", func() {

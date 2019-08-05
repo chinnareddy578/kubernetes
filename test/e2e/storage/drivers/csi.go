@@ -41,6 +41,7 @@ import (
 	"strconv"
 
 	"github.com/onsi/ginkgo"
+	"k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -144,8 +145,6 @@ func (h *hostpathCSIDriver) PrepareTest(f *framework.Framework) (*testsuites.Per
 		ClientNodeName: nodeName,
 	}
 
-	// TODO (?): the storage.csi.image.version and storage.csi.image.registry
-	// settings are ignored for this test. We could patch the image definitions.
 	o := utils.PatchCSIOptions{
 		OldDriverName:            h.driverInfo.Name,
 		NewDriverName:            config.GetUniqueDriverName(),
@@ -288,8 +287,6 @@ func (m *mockCSIDriver) PrepareTest(f *framework.Framework) (*testsuites.PerTest
 		containerArgs = append(containerArgs, "--node-expand-required=true")
 	}
 
-	// TODO (?): the storage.csi.image.version and storage.csi.image.registry
-	// settings are ignored for this test. We could patch the image definitions.
 	o := utils.PatchCSIOptions{
 		OldDriverName:                 "csi-mock",
 		NewDriverName:                 "csi-mock-" + f.UniqueName,
@@ -351,12 +348,14 @@ func InitGcePDCSIDriver() testsuites.TestDriver {
 				"ext4",
 				"xfs",
 			),
+			SupportedMountOption: sets.NewString("debug", "nouid32"),
 			Capabilities: map[testsuites.Capability]bool{
 				testsuites.CapPersistence: true,
 				testsuites.CapFsGroup:     true,
 				testsuites.CapExec:        true,
 				testsuites.CapMultiPODs:   true,
 			},
+			RequiredAccessModes: []v1.PersistentVolumeAccessMode{v1.ReadWriteOnce},
 		},
 	}
 }

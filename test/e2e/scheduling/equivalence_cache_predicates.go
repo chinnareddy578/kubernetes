@@ -34,7 +34,6 @@ import (
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 	// ensure libs have a chance to initialize
 	_ "github.com/stretchr/testify/assert"
 )
@@ -49,6 +48,7 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 	var masterNodes sets.String
 	var systemPodsNo int
 	var ns string
+	var err error
 	f := framework.NewDefaultFramework("equivalence-cache")
 
 	ginkgo.BeforeEach(func() {
@@ -56,7 +56,12 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 		ns = f.Namespace.Name
 
 		e2enode.WaitForTotalHealthy(cs, time.Minute)
-		masterNodes, nodeList = framework.GetMasterAndWorkerNodesOrDie(cs)
+		masterNodes, nodeList, err = e2enode.GetMasterAndWorkerNodes(cs)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
 
 		framework.ExpectNoError(framework.CheckTestingNSDeletedExcept(cs, ns))
 
@@ -172,14 +177,18 @@ var _ = framework.KubeDescribe("EquivalenceCache [Serial]", func() {
 
 	// This test verifies that MatchInterPodAffinity (anti-affinity) is respected as expected.
 	ginkgo.It("validates pod anti-affinity works properly when new replica pod is scheduled", func() {
+		// check if there are at least 2 worker nodes available, else skip this test.
+		if len(nodeList.Items) < 2 {
+			framework.Skipf("Skipping as the test requires at least two worker nodes, current number of nodes: %d", len(nodeList.Items))
+		}
 		ginkgo.By("Launching two pods on two distinct nodes to get two node names")
 		CreateHostPortPods(f, "host-port", 2, true)
 		defer framework.DeleteRCAndWaitForGC(f.ClientSet, ns, "host-port")
 		podList, err := cs.CoreV1().Pods(ns).List(metav1.ListOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(len(podList.Items)).To(gomega.Equal(2))
+		framework.ExpectEqual(len(podList.Items), 2)
 		nodeNames := []string{podList.Items[0].Spec.NodeName, podList.Items[1].Spec.NodeName}
-		gomega.Expect(nodeNames[0]).ToNot(gomega.Equal(nodeNames[1]))
+		framework.ExpectNotEqual(nodeNames[0], nodeNames[1])
 
 		ginkgo.By("Applying a random label to both nodes.")
 		k := "e2e.inter-pod-affinity.kubernetes.io/zone"

@@ -22,7 +22,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -98,10 +97,8 @@ import (
 	"k8s.io/kubernetes/pkg/util/rlimit"
 	"k8s.io/kubernetes/pkg/version"
 	"k8s.io/kubernetes/pkg/version/verflag"
-	nsutil "k8s.io/kubernetes/pkg/volume/util/nsenter"
 	"k8s.io/kubernetes/pkg/volume/util/subpath"
 	"k8s.io/utils/exec"
-	"k8s.io/utils/nsenter"
 )
 
 const (
@@ -372,22 +369,8 @@ func UnsecuredDependencies(s *options.KubeletServer) (*kubelet.Dependencies, err
 
 	mounter := mount.New(s.ExperimentalMounterPath)
 	subpather := subpath.New(mounter)
+	hu := mount.NewHostUtil()
 	var pluginRunner = exec.New()
-	if s.Containerized {
-		klog.V(2).Info("Running kubelet in containerized mode")
-		ne, err := nsenter.NewNsenter(nsenter.DefaultHostRootFsPath, exec.New())
-		if err != nil {
-			return nil, err
-		}
-		mounter = nsutil.NewMounter(s.RootDirectory, ne)
-		// NSenter only valid on Linux
-		subpather = subpath.NewNSEnter(mounter, ne, s.RootDirectory)
-		// an exec interface which can use nsenter for flex plugin calls
-		pluginRunner, err = nsenter.NewNsenter(nsenter.DefaultHostRootFsPath, exec.New())
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	var dockerClientConfig *dockershim.ClientConfig
 	if s.ContainerRuntime == kubetypes.DockerContainerRuntime {
@@ -407,6 +390,7 @@ func UnsecuredDependencies(s *options.KubeletServer) (*kubelet.Dependencies, err
 		KubeClient:          nil,
 		HeartbeatClient:     nil,
 		EventClient:         nil,
+		HostUtil:            hu,
 		Mounter:             mounter,
 		Subpather:           subpather,
 		OOMAdjuster:         oom.NewOOMAdjuster(),
@@ -434,7 +418,7 @@ func Run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 
 func checkPermissions() error {
 	if uid := os.Getuid(); uid != 0 {
-		return fmt.Errorf("Kubelet needs to run as uid `0`. It is being run as %d", uid)
+		return fmt.Errorf("kubelet needs to run as uid `0`. It is being run as %d", uid)
 	}
 	// TODO: Check if kubelet is running in the `initial` user namespace.
 	// http://man7.org/linux/man-pages/man7/user_namespaces.7.html
@@ -709,6 +693,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 				ExperimentalPodPidsLimit:              s.PodPidsLimit,
 				EnforceCPULimits:                      s.CPUCFSQuota,
 				CPUCFSQuotaPeriod:                     s.CPUCFSQuotaPeriod.Duration,
+				ExperimentalTopologyManagerPolicy:     s.TopologyManagerPolicy,
 			},
 			s.FailSwapOn,
 			devicePluginEnabled,
@@ -724,8 +709,6 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, stopCh <-chan
 	}
 
 	utilruntime.ReallyCrash = s.ReallyCrashForTesting
-
-	rand.Seed(time.Now().UnixNano())
 
 	// TODO(vmarmol): Do this through container config.
 	oomAdjuster := kubeDeps.OOMAdjuster
@@ -1248,6 +1231,7 @@ func RunDockershim(f *options.KubeletFlags, c *kubeletconfiginternal.KubeletConf
 		PluginName:         r.NetworkPluginName,
 		PluginConfDir:      r.CNIConfDir,
 		PluginBinDirString: r.CNIBinDir,
+		PluginCacheDir:     r.CNICacheDir,
 		MTU:                int(r.NetworkPluginMTU),
 	}
 

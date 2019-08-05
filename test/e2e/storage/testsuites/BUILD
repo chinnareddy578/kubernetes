@@ -5,11 +5,13 @@ go_library(
     srcs = [
         "base.go",
         "driveroperations.go",
+        "ephemeral.go",
         "multivolume.go",
         "provisioning.go",
         "snapshottable.go",
         "subpath.go",
         "testdriver.go",
+        "volume_expand.go",
         "volume_io.go",
         "volumemode.go",
         "volumes.go",

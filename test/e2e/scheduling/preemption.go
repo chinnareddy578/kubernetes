@@ -41,6 +41,7 @@ import (
 
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
+
 	// ensure libs have a chance to initialize
 	_ "github.com/stretchr/testify/assert"
 )
@@ -76,15 +77,21 @@ var _ = SIGDescribe("SchedulerPreemption [Serial]", func() {
 		cs = f.ClientSet
 		ns = f.Namespace.Name
 		nodeList = &v1.NodeList{}
+		var err error
 		for _, pair := range priorityPairs {
 			_, err := f.ClientSet.SchedulingV1().PriorityClasses().Create(&schedulingv1.PriorityClass{ObjectMeta: metav1.ObjectMeta{Name: pair.name}, Value: pair.value})
-			gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+			framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 		}
 
 		e2enode.WaitForTotalHealthy(cs, time.Minute)
-		masterNodes, nodeList = framework.GetMasterAndWorkerNodesOrDie(cs)
+		masterNodes, nodeList, err = e2enode.GetMasterAndWorkerNodes(cs)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
 
-		err := framework.CheckTestingNSDeletedExcept(cs, ns)
+		err = framework.CheckTestingNSDeletedExcept(cs, ns)
 		framework.ExpectNoError(err)
 	})
 
@@ -98,10 +105,10 @@ var _ = SIGDescribe("SchedulerPreemption [Serial]", func() {
 		pods := make([]*v1.Pod, len(nodeList.Items))
 		for i, node := range nodeList.Items {
 			cpuAllocatable, found := node.Status.Allocatable["cpu"]
-			gomega.Expect(found).To(gomega.Equal(true))
+			framework.ExpectEqual(found, true)
 			milliCPU := cpuAllocatable.MilliValue() * 40 / 100
 			memAllocatable, found := node.Status.Allocatable["memory"]
-			gomega.Expect(found).To(gomega.Equal(true))
+			framework.ExpectEqual(found, true)
 			memory := memAllocatable.Value() * 60 / 100
 			podRes = v1.ResourceList{}
 			podRes[v1.ResourceCPU] = *resource.NewMilliQuantity(int64(milliCPU), resource.DecimalSI)
@@ -158,10 +165,10 @@ var _ = SIGDescribe("SchedulerPreemption [Serial]", func() {
 		pods := make([]*v1.Pod, len(nodeList.Items))
 		for i, node := range nodeList.Items {
 			cpuAllocatable, found := node.Status.Allocatable["cpu"]
-			gomega.Expect(found).To(gomega.Equal(true))
+			framework.ExpectEqual(found, true)
 			milliCPU := cpuAllocatable.MilliValue() * 40 / 100
 			memAllocatable, found := node.Status.Allocatable["memory"]
-			gomega.Expect(found).To(gomega.Equal(true))
+			framework.ExpectEqual(found, true)
 			memory := memAllocatable.Value() * 60 / 100
 			podRes = v1.ResourceList{}
 			podRes[v1.ResourceCPU] = *resource.NewMilliQuantity(int64(milliCPU), resource.DecimalSI)
@@ -456,7 +463,7 @@ var _ = SIGDescribe("PreemptionExecutionPath", func() {
 				e2elog.Logf("Failed to create priority '%v/%v': %v", priorityName, priorityVal, err)
 				e2elog.Logf("Reason: %v. Msg: %v", errors.ReasonForError(err), err)
 			}
-			gomega.Expect(err == nil || errors.IsAlreadyExists(err)).To(gomega.Equal(true))
+			framework.ExpectEqual(err == nil || errors.IsAlreadyExists(err), true)
 		}
 	})
 

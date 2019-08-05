@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubernetes/pkg/util/mount"
 	"k8s.io/kubernetes/pkg/volume"
+	"k8s.io/kubernetes/pkg/volume/csi"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/nestedpendingoperations"
 	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
@@ -123,7 +124,7 @@ type OperationExecutor interface {
 	// global map path. If number of reference is zero, remove global map path
 	// directory and free a volume for detach.
 	// It then updates the actual state of the world to reflect that.
-	UnmountDevice(deviceToDetach AttachedVolume, actualStateOfWorld ActualStateOfWorldMounterUpdater, mounter mount.Interface) error
+	UnmountDevice(deviceToDetach AttachedVolume, actualStateOfWorld ActualStateOfWorldMounterUpdater, hostutil mount.HostUtils) error
 
 	// VerifyControllerAttachedVolume checks if the specified volume is present
 	// in the specified nodes AttachedVolumes Status field. It uses kubeClient
@@ -635,17 +636,46 @@ func (oe *operationExecutor) VerifyVolumesAreAttached(
 				klog.Errorf("VerifyVolumesAreAttached: nil spec for volume %s", volumeAttached.VolumeName)
 				continue
 			}
-			volumePlugin, err :=
-				oe.operationGenerator.GetVolumePluginMgr().FindPluginBySpec(volumeAttached.VolumeSpec)
 
-			if err != nil || volumePlugin == nil {
-				klog.Errorf(
-					"VolumesAreAttached.FindPluginBySpec failed for volume %q (spec.Name: %q) on node %q with error: %v",
-					volumeAttached.VolumeName,
-					volumeAttached.VolumeSpec.Name(),
-					volumeAttached.NodeName,
-					err)
+			// Migration: Must also check the Node since Attach would have been done with in-tree if node is not using Migration
+			nu, err := nodeUsingCSIPlugin(oe.operationGenerator, volumeAttached.VolumeSpec, node)
+			if err != nil {
+				klog.Errorf(volumeAttached.GenerateErrorDetailed("VolumesAreAttached.NodeUsingCSIPlugin failed", err).Error())
 				continue
+			}
+
+			var volumePlugin volume.VolumePlugin
+			if useCSIPlugin(oe.operationGenerator.GetVolumePluginMgr(), volumeAttached.VolumeSpec) && nu {
+				// The volume represented by this spec is CSI and thus should be migrated
+				volumePlugin, err = oe.operationGenerator.GetVolumePluginMgr().FindPluginByName(csi.CSIPluginName)
+				if err != nil || volumePlugin == nil {
+					klog.Errorf(
+						"VolumesAreAttached.Name failed for volume %q (spec.Name: %q) on node %q with error: %v",
+						volumeAttached.VolumeName,
+						volumeAttached.VolumeSpec.Name(),
+						volumeAttached.NodeName,
+						err)
+					continue
+				}
+
+				csiSpec, err := translateSpec(volumeAttached.VolumeSpec)
+				if err != nil {
+					klog.Errorf(volumeAttached.GenerateErrorDetailed("VolumesAreAttached.TranslateSpec failed", err).Error())
+					continue
+				}
+				volumeAttached.VolumeSpec = csiSpec
+			} else {
+				volumePlugin, err =
+					oe.operationGenerator.GetVolumePluginMgr().FindPluginBySpec(volumeAttached.VolumeSpec)
+				if err != nil || volumePlugin == nil {
+					klog.Errorf(
+						"VolumesAreAttached.FindPluginBySpec failed for volume %q (spec.Name: %q) on node %q with error: %v",
+						volumeAttached.VolumeName,
+						volumeAttached.VolumeSpec.Name(),
+						volumeAttached.NodeName,
+						err)
+					continue
+				}
 			}
 
 			pluginName := volumePlugin.GetPluginName()
@@ -792,7 +822,7 @@ func (oe *operationExecutor) UnmountVolume(
 func (oe *operationExecutor) UnmountDevice(
 	deviceToDetach AttachedVolume,
 	actualStateOfWorld ActualStateOfWorldMounterUpdater,
-	mounter mount.Interface) error {
+	hostutil mount.HostUtils) error {
 	fsVolume, err := util.CheckVolumeModeFilesystem(deviceToDetach.VolumeSpec)
 	if err != nil {
 		return err
@@ -802,12 +832,12 @@ func (oe *operationExecutor) UnmountDevice(
 		// Filesystem volume case
 		// Unmount and detach a device if a volume isn't referenced
 		generatedOperations, err = oe.operationGenerator.GenerateUnmountDeviceFunc(
-			deviceToDetach, actualStateOfWorld, mounter)
+			deviceToDetach, actualStateOfWorld, hostutil)
 	} else {
 		// Block volume case
 		// Detach a device and remove loopback if a volume isn't referenced
 		generatedOperations, err = oe.operationGenerator.GenerateUnmapDeviceFunc(
-			deviceToDetach, actualStateOfWorld, mounter)
+			deviceToDetach, actualStateOfWorld, hostutil)
 	}
 	if err != nil {
 		return err

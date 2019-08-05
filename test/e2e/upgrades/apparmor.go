@@ -69,7 +69,7 @@ func (t *AppArmorUpgradeTest) Setup(f *framework.Framework) {
 // pod can still consume the secret.
 func (t *AppArmorUpgradeTest) Test(f *framework.Framework, done <-chan struct{}, upgrade UpgradeType) {
 	<-done
-	if upgrade == MasterUpgrade || upgrade == ClusterUpgrade {
+	if upgrade == MasterUpgrade {
 		t.verifyPodStillUp(f)
 	}
 	t.verifyNodesAppArmorEnabled(f)
@@ -87,7 +87,7 @@ func (t *AppArmorUpgradeTest) verifyPodStillUp(f *framework.Framework) {
 	ginkgo.By("Verifying an AppArmor profile is continuously enforced for a pod")
 	pod, err := f.PodClient().Get(t.pod.Name, metav1.GetOptions{})
 	framework.ExpectNoError(err, "Should be able to get pod")
-	gomega.Expect(pod.Status.Phase).To(gomega.Equal(v1.PodRunning), "Pod should stay running")
+	framework.ExpectEqual(pod.Status.Phase, v1.PodRunning, "Pod should stay running")
 	gomega.Expect(pod.Status.ContainerStatuses[0].State.Running).NotTo(gomega.BeNil(), "Container should be running")
 	gomega.Expect(pod.Status.ContainerStatuses[0].RestartCount).To(gomega.BeZero(), "Container should not need to be restarted")
 }

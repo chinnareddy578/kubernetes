@@ -32,7 +32,9 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/pkg/util/system"
+	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
+	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
 )
 
 // ResourceConstraint is a struct to hold constraints.
@@ -72,7 +74,7 @@ func (s *ResourceUsageSummary) PrintHumanReadable() string {
 
 // PrintJSON prints resource usage summary in JSON.
 func (s *ResourceUsageSummary) PrintJSON() string {
-	return PrettyPrintJSON(*s)
+	return e2emetrics.PrettyPrintJSON(*s)
 }
 
 // SummaryKind returns string of ResourceUsageSummary
@@ -80,9 +82,9 @@ func (s *ResourceUsageSummary) SummaryKind() string {
 	return "ResourceUsageSummary"
 }
 
-func computePercentiles(timeSeries []ResourceUsagePerContainer, percentilesToCompute []int) map[int]ResourceUsagePerContainer {
+func computePercentiles(timeSeries []e2ekubelet.ResourceUsagePerContainer, percentilesToCompute []int) map[int]e2ekubelet.ResourceUsagePerContainer {
 	if len(timeSeries) == 0 {
-		return make(map[int]ResourceUsagePerContainer)
+		return make(map[int]e2ekubelet.ResourceUsagePerContainer)
 	}
 	dataMap := make(map[string]*usageDataPerContainer)
 	for i := range timeSeries {
@@ -105,12 +107,12 @@ func computePercentiles(timeSeries []ResourceUsagePerContainer, percentilesToCom
 		sort.Sort(uint64arr(v.memWorkSetData))
 	}
 
-	result := make(map[int]ResourceUsagePerContainer)
+	result := make(map[int]e2ekubelet.ResourceUsagePerContainer)
 	for _, perc := range percentilesToCompute {
-		data := make(ResourceUsagePerContainer)
+		data := make(e2ekubelet.ResourceUsagePerContainer)
 		for k, v := range dataMap {
 			percentileIndex := int(math.Ceil(float64(len(v.cpuData)*perc)/100)) - 1
-			data[k] = &ContainerResourceUsage{
+			data[k] = &e2ekubelet.ContainerResourceUsage{
 				Name:                    k,
 				CPUUsageInCores:         v.cpuData[percentileIndex],
 				MemoryUsageInBytes:      v.memUseData[percentileIndex],
@@ -122,8 +124,8 @@ func computePercentiles(timeSeries []ResourceUsagePerContainer, percentilesToCom
 	return result
 }
 
-func leftMergeData(left, right map[int]ResourceUsagePerContainer) map[int]ResourceUsagePerContainer {
-	result := make(map[int]ResourceUsagePerContainer)
+func leftMergeData(left, right map[int]e2ekubelet.ResourceUsagePerContainer) map[int]e2ekubelet.ResourceUsagePerContainer {
+	result := make(map[int]e2ekubelet.ResourceUsagePerContainer)
 	for percentile, data := range left {
 		result[percentile] = data
 		if _, ok := right[percentile]; !ok {
@@ -142,7 +144,7 @@ type resourceGatherWorker struct {
 	wg                          *sync.WaitGroup
 	containerIDs                []string
 	stopCh                      chan struct{}
-	dataSeries                  []ResourceUsagePerContainer
+	dataSeries                  []e2ekubelet.ResourceUsagePerContainer
 	finished                    bool
 	inKubemark                  bool
 	resourceDataGatheringPeriod time.Duration
@@ -151,14 +153,14 @@ type resourceGatherWorker struct {
 }
 
 func (w *resourceGatherWorker) singleProbe() {
-	data := make(ResourceUsagePerContainer)
+	data := make(e2ekubelet.ResourceUsagePerContainer)
 	if w.inKubemark {
 		kubemarkData := GetKubemarkMasterComponentsResourceUsage()
 		if data == nil {
 			return
 		}
 		for k, v := range kubemarkData {
-			data[k] = &ContainerResourceUsage{
+			data[k] = &e2ekubelet.ContainerResourceUsage{
 				Name:                    v.Name,
 				MemoryWorkingSetInBytes: v.MemoryWorkingSetInBytes,
 				CPUUsageInCores:         v.CPUUsageInCores,
@@ -354,7 +356,7 @@ func (g *ContainerResourceGatherer) StopAndSummarize(percentiles []int, constrai
 		e2elog.Logf("Warning! Empty percentile list for stopAndPrintData.")
 		return &ResourceUsageSummary{}, fmt.Errorf("Failed to get any resource usage data")
 	}
-	data := make(map[int]ResourceUsagePerContainer)
+	data := make(map[int]e2ekubelet.ResourceUsagePerContainer)
 	for i := range g.workers {
 		if g.workers[i].finished {
 			stats := computePercentiles(g.workers[i].dataSeries, percentiles)

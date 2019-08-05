@@ -39,10 +39,11 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	"k8s.io/kubernetes/test/e2e/framework/ginkgowrapper"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
-	"k8s.io/kubernetes/test/e2e/framework/metrics"
+	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	"k8s.io/kubernetes/test/e2e/manifest"
 	testutils "k8s.io/kubernetes/test/utils"
+	utilnet "k8s.io/utils/net"
 
 	// ensure auth plugins are loaded
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -143,6 +144,17 @@ var _ = ginkgo.SynchronizedBeforeSuite(func() []byte {
 		e2elog.Logf("kube-apiserver version: %s", serverVersion.GitVersion)
 	}
 
+	// Obtain the default IP family of the cluster
+	// Some e2e test are designed to work on IPv4 only, this global variable
+	// allows to adapt those tests to work on both IPv4 and IPv6
+	// TODO(dual-stack): dual stack clusters should pass full e2e testing at least with the primary IP family
+	// the dual stack clusters can be ipv4-ipv6 or ipv6-ipv4, order matters,
+	// and services use the primary IP family by default
+	// If we´ll need to provide additional context for dual-stack, we can detect it
+	// because pods have two addresses (one per family)
+	framework.TestContext.IPFamily = getDefaultClusterIPFamily(c)
+	e2elog.Logf("Cluster IP family: %s", framework.TestContext.IPFamily)
+
 	// Reference common test to make the import valid.
 	commontest.CurrentSuite = commontest.E2E
 
@@ -188,7 +200,7 @@ func gatherTestSuiteMetrics() error {
 	}
 
 	// Grab metrics for apiserver, scheduler, controller-manager, kubelet (for non-kubemark case) and cluster autoscaler (optionally).
-	grabber, err := metrics.NewMetricsGrabber(c, nil, !framework.ProviderIs("kubemark"), true, true, true, framework.TestContext.IncludeClusterAutoscalerMetrics)
+	grabber, err := e2emetrics.NewMetricsGrabber(c, nil, !framework.ProviderIs("kubemark"), true, true, true, framework.TestContext.IncludeClusterAutoscalerMetrics)
 	if err != nil {
 		return fmt.Errorf("failed to create MetricsGrabber: %v", err)
 	}
@@ -198,7 +210,7 @@ func gatherTestSuiteMetrics() error {
 		return fmt.Errorf("failed to grab metrics: %v", err)
 	}
 
-	metricsForE2E := (*framework.MetricsForE2E)(&received)
+	metricsForE2E := (*e2emetrics.MetricsForE2E)(&received)
 	metricsJSON := metricsForE2E.PrintJSON()
 	if framework.TestContext.ReportDir != "" {
 		filePath := path.Join(framework.TestContext.ReportDir, "MetricsForE2ESuite_"+time.Now().Format(time.RFC3339)+".json")
@@ -275,4 +287,20 @@ func runKubernetesServiceTestContainer(c clientset.Interface, ns string) {
 	} else {
 		e2elog.Logf("Output of clusterapi-tester:\n%v", logs)
 	}
+}
+
+// getDefaultClusterIPFamily obtains the default IP family of the cluster
+// using the Cluster IP address of the kubernetes service created in the default namespace
+// This unequivocally identifies the default IP family because services are single family
+func getDefaultClusterIPFamily(c clientset.Interface) string {
+	// Get the ClusterIP of the kubernetes service created in the default namespace
+	svc, err := c.CoreV1().Services(metav1.NamespaceDefault).Get("kubernetes", metav1.GetOptions{})
+	if err != nil {
+		e2elog.Failf("Failed to get kubernetes service ClusterIP: %v", err)
+	}
+
+	if utilnet.IsIPv6String(svc.Spec.ClusterIP) {
+		return "ipv6"
+	}
+	return "ipv4"
 }

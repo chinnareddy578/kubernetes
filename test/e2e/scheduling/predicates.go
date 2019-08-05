@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -31,12 +31,12 @@ import (
 	"k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
+	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 	// ensure libs have a chance to initialize
 	_ "github.com/stretchr/testify/assert"
 )
@@ -83,11 +83,17 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		cs = f.ClientSet
 		ns = f.Namespace.Name
 		nodeList = &v1.NodeList{}
+		var err error
 
 		framework.AllNodesReady(cs, time.Minute)
-		masterNodes, nodeList = framework.GetMasterAndWorkerNodesOrDie(cs)
+		masterNodes, nodeList, err = e2enode.GetMasterAndWorkerNodes(cs)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
 
-		err := framework.CheckTestingNSDeletedExcept(cs, ns)
+		err = framework.CheckTestingNSDeletedExcept(cs, ns)
 		framework.ExpectNoError(err)
 
 		for _, node := range nodeList.Items {
@@ -108,7 +114,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		for _, node := range nodeList.Items {
 			e2elog.Logf("Node: %v", node)
 			podCapacity, found := node.Status.Capacity[v1.ResourcePods]
-			gomega.Expect(found).To(gomega.Equal(true))
+			framework.ExpectEqual(found, true)
 			totalPodCapacity += podCapacity.Value()
 		}
 
@@ -148,10 +154,10 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		nodeToAllocatableMap := make(map[string]int64)
 		for _, node := range nodeList.Items {
 			allocatable, found := node.Status.Allocatable[v1.ResourceEphemeralStorage]
-			gomega.Expect(found).To(gomega.Equal(true))
-			nodeToAllocatableMap[node.Name] = allocatable.MilliValue()
-			if nodeMaxAllocatable < allocatable.MilliValue() {
-				nodeMaxAllocatable = allocatable.MilliValue()
+			framework.ExpectEqual(found, true)
+			nodeToAllocatableMap[node.Name] = allocatable.Value()
+			if nodeMaxAllocatable < allocatable.Value() {
+				nodeMaxAllocatable = allocatable.Value()
 			}
 		}
 		framework.WaitForStableCluster(cs, masterNodes)
@@ -161,19 +167,20 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		for _, pod := range pods.Items {
 			_, found := nodeToAllocatableMap[pod.Spec.NodeName]
 			if found && pod.Status.Phase != v1.PodSucceeded && pod.Status.Phase != v1.PodFailed {
-				e2elog.Logf("Pod %v requesting local ephemeral resource =%vm on Node %v", pod.Name, getRequestedStorageEphemeralStorage(pod), pod.Spec.NodeName)
+				e2elog.Logf("Pod %v requesting local ephemeral resource =%v on Node %v", pod.Name, getRequestedStorageEphemeralStorage(pod), pod.Spec.NodeName)
 				nodeToAllocatableMap[pod.Spec.NodeName] -= getRequestedStorageEphemeralStorage(pod)
 			}
 		}
 
 		var podsNeededForSaturation int
+		var ephemeralStoragePerPod int64
 
-		milliEphemeralStoragePerPod := nodeMaxAllocatable / maxNumberOfPods
+		ephemeralStoragePerPod = nodeMaxAllocatable / maxNumberOfPods
 
-		e2elog.Logf("Using pod capacity: %vm", milliEphemeralStoragePerPod)
+		e2elog.Logf("Using pod capacity: %v", ephemeralStoragePerPod)
 		for name, leftAllocatable := range nodeToAllocatableMap {
-			e2elog.Logf("Node: %v has local ephemeral resource allocatable: %vm", name, leftAllocatable)
-			podsNeededForSaturation += (int)(leftAllocatable / milliEphemeralStoragePerPod)
+			e2elog.Logf("Node: %v has local ephemeral resource allocatable: %v", name, leftAllocatable)
+			podsNeededForSaturation += (int)(leftAllocatable / ephemeralStoragePerPod)
 		}
 
 		ginkgo.By(fmt.Sprintf("Starting additional %v Pods to fully saturate the cluster local ephemeral resource and trying to start another one", podsNeededForSaturation))
@@ -189,10 +196,10 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 					Labels: map[string]string{"name": ""},
 					Resources: &v1.ResourceRequirements{
 						Limits: v1.ResourceList{
-							v1.ResourceEphemeralStorage: *resource.NewMilliQuantity(milliEphemeralStoragePerPod, "DecimalSI"),
+							v1.ResourceEphemeralStorage: *resource.NewQuantity(ephemeralStoragePerPod, "DecimalSI"),
 						},
 						Requests: v1.ResourceList{
-							v1.ResourceEphemeralStorage: *resource.NewMilliQuantity(milliEphemeralStoragePerPod, "DecimalSI"),
+							v1.ResourceEphemeralStorage: *resource.NewQuantity(ephemeralStoragePerPod, "DecimalSI"),
 						},
 					},
 				}), true, e2elog.Logf))
@@ -203,7 +210,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 			Labels: map[string]string{"name": "additional"},
 			Resources: &v1.ResourceRequirements{
 				Limits: v1.ResourceList{
-					v1.ResourceEphemeralStorage: *resource.NewMilliQuantity(milliEphemeralStoragePerPod, "DecimalSI"),
+					v1.ResourceEphemeralStorage: *resource.NewQuantity(ephemeralStoragePerPod, "DecimalSI"),
 				},
 			},
 		}
@@ -247,7 +254,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 			framework.ExpectNodeHasLabel(cs, node.Name, "node", node.Name)
 			// Find allocatable amount of CPU.
 			allocatable, found := node.Status.Allocatable[v1.ResourceCPU]
-			gomega.Expect(found).To(gomega.Equal(true))
+			framework.ExpectEqual(found, true)
 			nodeToAllocatableMap[node.Name] = allocatable.MilliValue()
 			if nodeMaxAllocatable < allocatable.MilliValue() {
 				nodeMaxAllocatable = allocatable.MilliValue()
@@ -275,6 +282,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		fillerPods := []*v1.Pod{}
 		for nodeName, cpu := range nodeToAllocatableMap {
 			requestedCPU := cpu * 7 / 10
+			e2elog.Logf("Creating a pod which consumes cpu=%vm on Node %v", requestedCPU, nodeName)
 			fillerPods = append(fillerPods, createPausePod(f, pausePodConfig{
 				Name: "filler-pod-" + string(uuid.NewUUID()),
 				Resources: &v1.ResourceRequirements{
@@ -383,7 +391,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		framework.ExpectNoError(e2epod.WaitForPodNotPending(cs, ns, labelPodName))
 		labelPod, err := cs.CoreV1().Pods(ns).Get(labelPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(labelPod.Spec.NodeName).To(gomega.Equal(nodeName))
+		framework.ExpectEqual(labelPod.Spec.NodeName, nodeName)
 	})
 
 	// Test Nodes does not have any label, hence it should be impossible to schedule Pod with
@@ -470,7 +478,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		framework.ExpectNoError(e2epod.WaitForPodNotPending(cs, ns, labelPodName))
 		labelPod, err := cs.CoreV1().Pods(ns).Get(labelPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(labelPod.Spec.NodeName).To(gomega.Equal(nodeName))
+		framework.ExpectEqual(labelPod.Spec.NodeName, nodeName)
 	})
 
 	// 1. Run a pod to get an available node, then delete the pod
@@ -513,7 +521,7 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		framework.ExpectNoError(e2epod.WaitForPodNotPending(cs, ns, tolerationPodName))
 		deployedPod, err := cs.CoreV1().Pods(ns).Get(tolerationPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(deployedPod.Spec.NodeName).To(gomega.Equal(nodeName))
+		framework.ExpectEqual(deployedPod.Spec.NodeName, nodeName)
 	})
 
 	// 1. Run a pod to get an available node, then delete the pod
@@ -555,7 +563,13 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		verifyResult(cs, 1, 0, ns)
 	})
 
-	ginkgo.It("validates that there is no conflict between pods with same hostPort but different hostIP and protocol", func() {
+	/*
+		Release : v1.16
+		Testname: Scheduling, HostPort matching and HostIP and Protocol not-matching
+		Description: Pods with the same HostPort value MUST be able to be scheduled to the same node
+		if the HostIP or Protocol is different.
+	*/
+	framework.ConformanceIt("validates that there is no conflict between pods with same hostPort but different hostIP and protocol", func() {
 
 		nodeName := GetNodeThatCanRunPod(f)
 
@@ -582,7 +596,13 @@ var _ = SIGDescribe("SchedulerPredicates [Serial]", func() {
 		createHostPortPodOnNode(f, "pod3", ns, "127.0.0.2", port, v1.ProtocolUDP, nodeSelector, true)
 	})
 
-	ginkgo.It("validates that there exists conflict between pods with same hostPort and protocol but one using 0.0.0.0 hostIP", func() {
+	/*
+		Release : v1.16
+		Testname: Scheduling, HostPort and Protocol match, HostIPs different but one is default HostIP (0.0.0.0)
+		Description: Pods with the same HostPort and Protocol, but different HostIPs, MUST NOT schedule to the
+		same node if one of those IPs is the default HostIP of 0.0.0.0, which represents all IPs on the host.
+	*/
+	framework.ConformanceIt("validates that there exists conflict between pods with same hostPort and protocol but one using 0.0.0.0 hostIP", func() {
 		nodeName := GetNodeThatCanRunPod(f)
 
 		// use nodeSelector to make sure the testing pods get assigned on the same node to explicitly verify there exists conflict or not
@@ -684,7 +704,7 @@ func getRequestedCPU(pod v1.Pod) int64 {
 func getRequestedStorageEphemeralStorage(pod v1.Pod) int64 {
 	var result int64
 	for _, container := range pod.Spec.Containers {
-		result += container.Resources.Requests.StorageEphemeral().MilliValue()
+		result += container.Resources.Requests.StorageEphemeral().Value()
 	}
 	return result
 }
@@ -715,7 +735,7 @@ func WaitForSchedulerAfterAction(f *framework.Framework, action common.Action, n
 	}
 	success, err := common.ObserveEventAfterAction(f, predicate, action)
 	framework.ExpectNoError(err)
-	gomega.Expect(success).To(gomega.Equal(true))
+	framework.ExpectEqual(success, true)
 }
 
 // TODO: upgrade calls in PodAffinity tests when we're able to run them
@@ -733,8 +753,8 @@ func verifyResult(c clientset.Interface, expectedScheduled int, expectedNotSched
 		return ""
 	}
 
-	gomega.Expect(len(notScheduledPods)).To(gomega.Equal(expectedNotScheduled), printOnce(fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods)))
-	gomega.Expect(len(scheduledPods)).To(gomega.Equal(expectedScheduled), printOnce(fmt.Sprintf("Scheduled Pods: %#v", scheduledPods)))
+	framework.ExpectEqual(len(notScheduledPods), expectedNotScheduled, printOnce(fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods)))
+	framework.ExpectEqual(len(scheduledPods), expectedScheduled, printOnce(fmt.Sprintf("Scheduled Pods: %#v", scheduledPods)))
 }
 
 // verifyReplicasResult is wrapper of verifyResult for a group pods with same "name: labelName" label, which means they belong to same RC
@@ -751,8 +771,8 @@ func verifyReplicasResult(c clientset.Interface, expectedScheduled int, expected
 		return ""
 	}
 
-	gomega.Expect(len(notScheduledPods)).To(gomega.Equal(expectedNotScheduled), printOnce(fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods)))
-	gomega.Expect(len(scheduledPods)).To(gomega.Equal(expectedScheduled), printOnce(fmt.Sprintf("Scheduled Pods: %#v", scheduledPods)))
+	framework.ExpectEqual(len(notScheduledPods), expectedNotScheduled, printOnce(fmt.Sprintf("Not scheduled Pods: %#v", notScheduledPods)))
+	framework.ExpectEqual(len(scheduledPods), expectedScheduled, printOnce(fmt.Sprintf("Scheduled Pods: %#v", scheduledPods)))
 }
 
 func getPodsByLabels(c clientset.Interface, ns string, labelsMap map[string]string) *v1.PodList {
@@ -806,6 +826,7 @@ func CreateHostPortPods(f *framework.Framework, id string, replicas int, expectR
 
 // create pod which using hostport on the specified node according to the nodeSelector
 func createHostPortPodOnNode(f *framework.Framework, podName, ns, hostIP string, port int32, protocol v1.Protocol, nodeSelector map[string]string, expectScheduled bool) {
+	hostIP = framework.TranslateIPv4ToIPv6(hostIP)
 	createPausePod(f, pausePodConfig{
 		Name: podName,
 		Ports: []v1.ContainerPort{

@@ -125,7 +125,8 @@ var _ = SIGDescribe("Proxy", func() {
 			pods := []*v1.Pod{}
 			cfg := testutils.RCConfig{
 				Client:       f.ClientSet,
-				Image:        imageutils.GetE2EImage(imageutils.Porter),
+				Image:        imageutils.GetE2EImage(imageutils.Agnhost),
+				Command:      []string{"/agnhost", "porter"},
 				Name:         service.Name,
 				Namespace:    f.Namespace.Name,
 				Replicas:     1,
@@ -311,7 +312,7 @@ func nodeProxyTest(f *framework.Framework, prefix, nodeDest string) {
 			serviceUnavailableErrors++
 		} else {
 			framework.ExpectNoError(err)
-			gomega.Expect(status).To(gomega.Equal(http.StatusOK))
+			framework.ExpectEqual(status, http.StatusOK)
 			gomega.Expect(d).To(gomega.BeNumerically("<", proxyHTTPCallTimeout))
 		}
 	}

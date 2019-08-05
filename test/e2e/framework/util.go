@@ -79,9 +79,9 @@ import (
 	"k8s.io/kubernetes/pkg/master/ports"
 	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
-	"k8s.io/kubernetes/pkg/util/system"
 	taintutils "k8s.io/kubernetes/pkg/util/taints"
 	"k8s.io/kubernetes/test/e2e/framework/ginkgowrapper"
+	e2ekubelet "k8s.io/kubernetes/test/e2e/framework/kubelet"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
@@ -150,9 +150,6 @@ const (
 	podScheduledBeforeTimeout = PodListTimeout + (20 * time.Second)
 
 	podRespondingTimeout = 15 * time.Minute
-	// ServiceRespondingTimeout is how long to wait for a service to be responding.
-	ServiceRespondingTimeout = 2 * time.Minute
-
 	// ClaimProvisionTimeout is how long claims have to become dynamically provisioned.
 	ClaimProvisionTimeout = 5 * time.Minute
 
@@ -219,13 +216,8 @@ var (
 	}
 
 	// ServeHostnameImage is a serve hostname image name.
-	ServeHostnameImage = imageutils.GetE2EImage(imageutils.ServeHostname)
+	ServeHostnameImage = imageutils.GetE2EImage(imageutils.Agnhost)
 )
-
-// GetServicesProxyRequest returns a request for a service proxy.
-func GetServicesProxyRequest(c clientset.Interface, request *restclient.Request) (*restclient.Request, error) {
-	return request.Resource("services").SubResource("proxy"), nil
-}
 
 // RunID is a unique identifier of the e2e run.
 // Beware that this ID is not the same for all tests in the e2e run, because each Ginkgo node creates it separately.
@@ -1255,43 +1247,6 @@ func KubectlVersion() (*utilversion.Version, error) {
 	return utilversion.ParseSemantic(matches[1])
 }
 
-// ServiceResponding waits for the service to be responding.
-func ServiceResponding(c clientset.Interface, ns, name string) error {
-	ginkgo.By(fmt.Sprintf("trying to dial the service %s.%s via the proxy", ns, name))
-
-	return wait.PollImmediate(Poll, ServiceRespondingTimeout, func() (done bool, err error) {
-		proxyRequest, errProxy := GetServicesProxyRequest(c, c.CoreV1().RESTClient().Get())
-		if errProxy != nil {
-			e2elog.Logf("Failed to get services proxy request: %v:", errProxy)
-			return false, nil
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), SingleCallTimeout)
-		defer cancel()
-
-		body, err := proxyRequest.Namespace(ns).
-			Context(ctx).
-			Name(name).
-			Do().
-			Raw()
-		if err != nil {
-			if ctx.Err() != nil {
-				e2elog.Failf("Failed to GET from service %s: %v", name, err)
-				return true, err
-			}
-			e2elog.Logf("Failed to GET from service %s: %v:", name, err)
-			return false, nil
-		}
-		got := string(body)
-		if len(got) == 0 {
-			e2elog.Logf("Service %s: expected non-empty response", name)
-			return false, err // stop polling
-		}
-		e2elog.Logf("Service %s: found nonempty answer: %s", name, got)
-		return true, nil
-	})
-}
-
 // RestclientConfig returns a config holds the information needed to build connection to kubernetes clusters.
 func RestclientConfig(kubeContext string) (*clientcmdapi.Config, error) {
 	e2elog.Logf(">>> kubeConfig: %s", TestContext.KubeConfig)
@@ -1344,13 +1299,17 @@ func LoadClientset() (*clientset.Clientset, error) {
 //       need to use such a function and can instead
 //       use the UUID utility function.
 func RandomSuffix() string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return strconv.Itoa(r.Int() % 10000)
+	return strconv.Itoa(rand.Intn(10000))
 }
 
 // ExpectEqual expects the specified two are the same, otherwise an exception raises
 func ExpectEqual(actual interface{}, extra interface{}, explain ...interface{}) {
 	gomega.Expect(actual).To(gomega.Equal(extra), explain...)
+}
+
+// ExpectNotEqual expects the specified two are not the same, otherwise an exception raises
+func ExpectNotEqual(actual interface{}, extra interface{}, explain ...interface{}) {
+	gomega.Expect(actual).NotTo(gomega.Equal(extra), explain...)
 }
 
 // ExpectError expects an error happens, otherwise an exception raises
@@ -1824,7 +1783,7 @@ func DumpNodeDebugInfo(c clientset.Interface, nodeNames []string, logFunc func(f
 				e.Source, e.Type, e.Message, e.Reason, e.FirstTimestamp, e.LastTimestamp, e.InvolvedObject)
 		}
 		logFunc("\nLogging pods the kubelet thinks is on node %v", n)
-		podList, err := GetKubeletPods(c, n)
+		podList, err := e2ekubelet.GetKubeletPods(c, n)
 		if err != nil {
 			logFunc("Unable to retrieve kubelet pods for node %v: %v", n, err)
 			continue
@@ -1939,24 +1898,13 @@ func isNodeUntainted(node *v1.Node) bool {
 // 1) Needs to be schedulable.
 // 2) Needs to be ready.
 // If EITHER 1 or 2 is not true, most tests will want to ignore the node entirely.
+// TODO: remove this function here when references point to e2enode.
 func GetReadySchedulableNodesOrDie(c clientset.Interface) (nodes *v1.NodeList) {
 	nodes = waitListSchedulableNodesOrDie(c)
 	// previous tests may have cause failures of some nodes. Let's skip
 	// 'Not Ready' nodes, just in case (there is no need to fail the test).
 	e2enode.Filter(nodes, func(node v1.Node) bool {
 		return isNodeSchedulable(&node) && isNodeUntainted(&node)
-	})
-	return nodes
-}
-
-// GetReadyNodesIncludingTaintedOrDie returns all ready nodes, even those which are tainted.
-// There are cases when we care about tainted nodes
-// E.g. in tests related to nodes with gpu we care about nodes despite
-// presence of nvidia.com/gpu=present:NoSchedule taint
-func GetReadyNodesIncludingTaintedOrDie(c clientset.Interface) (nodes *v1.NodeList) {
-	nodes = waitListSchedulableNodesOrDie(c)
-	e2enode.Filter(nodes, func(node v1.Node) bool {
-		return isNodeSchedulable(&node)
 	})
 	return nodes
 }
@@ -2157,7 +2105,7 @@ func AddOrUpdateAvoidPodOnNode(c clientset.Interface, nodeName string, avoidPods
 			if !apierrs.IsConflict(err) {
 				ExpectNoError(err)
 			} else {
-				e2elog.Logf("Conflict when trying to add/update avoidPonds %v to %v", avoidPods, nodeName)
+				e2elog.Logf("Conflict when trying to add/update avoidPods %v to %v with error %v", avoidPods, nodeName, err)
 			}
 		}
 		return true, nil
@@ -2846,34 +2794,6 @@ func UnblockNetwork(from string, to string) {
 	}
 }
 
-// GetKubeletPods retrieves the list of pods on the kubelet.
-// TODO(alejandrox1): move to pod subpkg once node methods have been refactored.
-func GetKubeletPods(c clientset.Interface, node string) (*v1.PodList, error) {
-	return getKubeletPods(c, node, "pods")
-}
-
-// GetKubeletRunningPods retrieves the list of running pods on the kubelet. The pods
-// includes necessary information (e.g., UID, name, namespace for
-// pods/containers), but do not contain the full spec.
-// TODO(alejandrox1): move to pod subpkg once node methods have been refactored.
-func GetKubeletRunningPods(c clientset.Interface, node string) (*v1.PodList, error) {
-	return getKubeletPods(c, node, "runningpods")
-}
-
-// TODO(alejandrox1): move to pod subpkg once node methods have been
-// refactored.
-func getKubeletPods(c clientset.Interface, node, resource string) (*v1.PodList, error) {
-	result := &v1.PodList{}
-	client, err := e2enode.ProxyRequest(c, node, resource, ports.KubeletPort)
-	if err != nil {
-		return &v1.PodList{}, err
-	}
-	if err = client.Into(result); err != nil {
-		return &v1.PodList{}, err
-	}
-	return result, nil
-}
-
 // PingCommand is the type to hold ping command.
 type PingCommand string
 
@@ -3040,22 +2960,6 @@ func WaitForStableCluster(c clientset.Interface, masterNodes sets.String) int {
 		}
 	}
 	return len(scheduledPods)
-}
-
-// GetMasterAndWorkerNodesOrDie will return a list masters and schedulable worker nodes
-func GetMasterAndWorkerNodesOrDie(c clientset.Interface) (sets.String, *v1.NodeList) {
-	nodes := &v1.NodeList{}
-	masters := sets.NewString()
-	all, err := c.CoreV1().Nodes().List(metav1.ListOptions{})
-	ExpectNoError(err)
-	for _, n := range all.Items {
-		if system.IsMasterNode(n.Name) {
-			masters.Insert(n.Name)
-		} else if isNodeSchedulable(&n) && isNodeUntainted(&n) {
-			nodes.Items = append(nodes.Items, n)
-		}
-	}
-	return masters, nodes
 }
 
 // ListNamespaceEvents lists the events in the given namespace.

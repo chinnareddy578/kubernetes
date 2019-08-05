@@ -96,10 +96,12 @@ func NewKubeConfigFilePhase(kubeConfigFileName string) workflow.Phase {
 func getKubeConfigPhaseFlags(name string) []string {
 	flags := []string{
 		options.APIServerAdvertiseAddress,
+		options.ControlPlaneEndpoint,
 		options.APIServerBindPort,
 		options.CertificatesDir,
 		options.CfgPath,
 		options.KubeconfigDir,
+		options.KubernetesVersion,
 	}
 	if name == "all" || name == kubeadmconstants.KubeletKubeConfigFileName {
 		flags = append(flags,

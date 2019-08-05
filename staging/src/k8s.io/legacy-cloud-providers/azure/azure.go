@@ -79,6 +79,11 @@ var (
 
 // Config holds the configuration parsed from the --cloud-config flag
 // All fields are required unless otherwise specified
+// NOTE: Cloud config files should follow the same Kubernetes deprecation policy as
+// flags or CLIs. Config fields should not change behavior in incompatible ways and
+// should be deprecated for at least 2 release prior to removing.
+// See https://kubernetes.io/docs/reference/using-api/deprecation-policy/#deprecating-a-flag-or-cli
+// for more details.
 type Config struct {
 	auth.AzureAuthConfig
 
@@ -183,7 +188,7 @@ type Cloud struct {
 	DisksClient             DisksClient
 	SnapshotsClient         *compute.SnapshotsClient
 	FileClient              FileClient
-	resourceRequestBackoff  wait.Backoff
+	ResourceRequestBackoff  wait.Backoff
 	metadata                *InstanceMetadataService
 	vmSet                   VMSet
 
@@ -404,7 +409,7 @@ func (az *Cloud) InitializeCloudFromConfig(config *Config, fromSecret bool) erro
 
 	az.Config = *config
 	az.Environment = *env
-	az.resourceRequestBackoff = resourceRequestBackoff
+	az.ResourceRequestBackoff = resourceRequestBackoff
 	az.metadata, err = NewInstanceMetadataService(metadataURL)
 	if err != nil {
 		return err

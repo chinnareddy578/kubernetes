@@ -758,9 +758,55 @@ contexts:
 EOF
   fi
 
-if [[ -n "${GCP_IMAGE_VERIFICATION_URL:-}" ]]; then
-    # This is the config file for the image review webhook.
-    cat <<EOF >/etc/gcp_image_review.config
+  if [[ -n "${WEBHOOK_GKE_EXEC_AUTH:-}" ]]; then
+    if [[ -z "${EXEC_AUTH_PLUGIN_URL:-}" ]]; then
+      1>&2 echo "You requested GKE exec auth support for webhooks, but EXEC_AUTH_PLUGIN_URL was not specified.  This configuration depends on gke-exec-auth-plugin for authenticating to the webhook endpoint."
+      exit 1
+    fi
+
+    if [[ -z "${TOKEN_URL:-}" || -z "${TOKEN_BODY:-}" || -z "${TOKEN_BODY_UNQUOTED:-}" ]]; then
+      1>&2 echo "You requested GKE exec auth support for webhooks, but TOKEN_URL, TOKEN_BODY, and TOKEN_BODY_UNQUOTED were not provided.  gke-exec-auth-plugin requires these values for its configuration."
+      exit 1
+    fi
+
+    # kubeconfig to be used by webhooks with GKE exec auth support.  Note that
+    # the path to gke-exec-auth-plugin is the path when mounted inside the
+    # kube-apiserver pod.
+    cat <<EOF >/etc/srv/kubernetes/webhook.kubeconfig
+apiVersion: v1
+kind: Config
+users:
+- name: '*.googleapis.com'
+  user:
+    exec:
+      apiVersion: "client.authentication.k8s.io/v1alpha1"
+      command: /usr/bin/gke-exec-auth-plugin
+      args:
+      - --mode=alt-token
+      - --alt-token-url=${TOKEN_URL}
+      - --alt-token-body=${TOKEN_BODY_UNQUOTED}
+EOF
+  fi
+
+  if [[ -n "${ADMISSION_CONTROL:-}" ]]; then
+    # Emit a basic admission control configuration file, with no plugins specified.
+    cat <<EOF >/etc/srv/kubernetes/admission_controller_config.yaml
+apiVersion: apiserver.k8s.io/v1alpha1
+kind: AdmissionConfiguration
+plugins:
+EOF
+
+    if [[ "${ADMISSION_CONTROL:-}" == *"ImagePolicyWebhook"* ]]; then
+      if [[ -z "${GCP_IMAGE_VERIFICATION_URL:-}" ]]; then
+        1>&2 echo "The ImagePolicyWebhook admission control plugin was requested, but GCP_IMAGE_VERIFICATION_URL was not provided."
+        exit 1
+      fi
+
+      1>&2 echo "ImagePolicyWebhook admission control plugin requested.  Configuring it to point at ${GCP_IMAGE_VERIFICATION_URL}"
+
+      # ImagePolicyWebhook does not use gke-exec-auth-plugin for authenticating
+      # to the webhook endpoint.  Emit its special kubeconfig.
+      cat <<EOF >/etc/srv/kubernetes/gcp_image_review.kubeconfig
 clusters:
   - name: gcp-image-review-server
     cluster:
@@ -777,15 +823,37 @@ contexts:
     user: kube-apiserver
   name: webhook
 EOF
-    # This is the config for the image review admission controller.
-    cat <<EOF >/etc/admission_controller.config
-imagePolicy:
-  kubeConfigFile: /etc/gcp_image_review.config
-  allowTTL: 30
-  denyTTL: 30
-  retryBackoff: 500
-  defaultAllow: true
+
+      # Append config for ImagePolicyWebhook to the shared admission controller
+      # configuration file.
+      cat <<EOF >>/etc/srv/kubernetes/admission_controller_config.yaml
+- name: ImagePolicyWebhook
+  configuration:
+    imagePolicy:
+      kubeConfigFile: /etc/srv/kubernetes/gcp_image_review.kubeconfig
+      allowTTL: 30
+      denyTTL: 30
+      retryBackoff: 500
+      defaultAllow: true
 EOF
+    fi
+
+    # If GKE exec auth for webhooks has been requested, then
+    # ValidatingAdmissionWebhook should use it.  Otherwise, run with the default
+    # config.
+    if [[ "${ADMISSION_CONTROL:-}" == *"ValidatingAdmissionWebhook"* && -n "${WEBHOOK_GKE_EXEC_AUTH:-}" ]]; then
+      1>&2 echo "ValidatingAdmissionWebhook requested, and WEBHOOK_GKE_EXEC_AUTH specified.  Configuring ValidatingAdmissionWebhook to use gke-exec-auth-plugin."
+
+      # Append config for ValidatingAdmissionWebhook to the shared admission
+      # controller configuration file.
+      cat <<EOF >>/etc/srv/kubernetes/admission_controller_config.yaml
+- name: ValidatingAdmissionWebhook
+  configuration:
+    apiVersion: apiserver.config.k8s.io/v1alpha1
+    kind: WebhookAdmission
+    kubeConfigFile: /etc/srv/kubernetes/webhook.kubeconfig
+EOF
+    fi
   fi
 }
 
@@ -1382,20 +1450,27 @@ function prepare-etcd-manifest {
   local etcd_cluster=""
   local cluster_state="new"
   local etcd_protocol="http"
+  local etcd_apiserver_protocol="http"
   local etcd_creds=""
   local etcd_apiserver_creds="${ETCD_APISERVER_CREDS:-}"
   local etcd_extra_args="${ETCD_EXTRA_ARGS:-}"
+  local suffix="$1"
+  local etcd_livenessprobe_port="$2"
 
   if [[ -n "${INITIAL_ETCD_CLUSTER_STATE:-}" ]]; then
     cluster_state="${INITIAL_ETCD_CLUSTER_STATE}"
   fi
-  if [[ -n "${ETCD_CA_KEY:-}" && -n "${ETCD_CA_CERT:-}" && -n "${ETCD_PEER_KEY:-}" && -n "${ETCD_PEER_CERT:-}" ]]; then
+  if [[ -n "${ETCD_CA_CERT:-}" && -n "${ETCD_PEER_KEY:-}" && -n "${ETCD_PEER_CERT:-}" ]]; then
     etcd_creds=" --peer-trusted-ca-file /etc/srv/kubernetes/etcd-ca.crt --peer-cert-file /etc/srv/kubernetes/etcd-peer.crt --peer-key-file /etc/srv/kubernetes/etcd-peer.key -peer-client-cert-auth "
     etcd_protocol="https"
   fi
 
-  if [[ -n "${ETCD_APISERVER_CA_KEY:-}" && -n "${ETCD_APISERVER_CA_CERT:-}" && -n "${ETCD_APISERVER_SERVER_KEY:-}" && -n "${ETCD_APISERVER_SERVER_CERT:-}" ]]; then
+  # mTLS should only be enabled for etcd server but not etcd-events. if $1 suffix is empty, it's etcd server.
+  if [[ -z "${suffix}" && -n "${ETCD_APISERVER_CA_KEY:-}" && -n "${ETCD_APISERVER_CA_CERT:-}" && -n "${ETCD_APISERVER_SERVER_KEY:-}" && -n "${ETCD_APISERVER_SERVER_CERT:-}" && -n "${ETCD_APISERVER_CLIENT_KEY:-}" && -n "${ETCD_APISERVER_CLIENT_CERT:-}" ]]; then
     etcd_apiserver_creds=" --client-cert-auth --trusted-ca-file ${ETCD_APISERVER_CA_CERT_PATH} --cert-file ${ETCD_APISERVER_SERVER_CERT_PATH} --key-file ${ETCD_APISERVER_SERVER_KEY_PATH} "
+    etcd_apiserver_protocol="https"
+    etcd_livenessprobe_port="2382"
+    etcd_extra_args+=" --listen-metrics-urls=http://127.0.0.1:${etcd_livenessprobe_port} "
   fi
 
   for host in $(echo "${INITIAL_ETCD_CLUSTER:-${host_name}}" | tr "," "\n"); do
@@ -1443,9 +1518,11 @@ function prepare-etcd-manifest {
     sed -i -e "s@{{ *pillar\.get('etcd_docker_repository', '\(.*\)') *}}@\1@g" "${temp_file}"
   fi
   sed -i -e "s@{{ *etcd_protocol *}}@$etcd_protocol@g" "${temp_file}"
+  sed -i -e "s@{{ *etcd_apiserver_protocol *}}@$etcd_apiserver_protocol@g" "${temp_file}"
   sed -i -e "s@{{ *etcd_creds *}}@$etcd_creds@g" "${temp_file}"
   sed -i -e "s@{{ *etcd_apiserver_creds *}}@$etcd_apiserver_creds@g" "${temp_file}"
   sed -i -e "s@{{ *etcd_extra_args *}}@$etcd_extra_args@g" "${temp_file}"
+  sed -i -e "s@{{ *etcd_livenessprobe_port *}}@$etcd_livenessprobe_port@g" "${temp_file}"
   if [[ -n "${ETCD_VERSION:-}" ]]; then
     sed -i -e "s@{{ *pillar\.get('etcd_version', '\(.*\)') *}}@${ETCD_VERSION}@g" "${temp_file}"
   else
@@ -1555,16 +1632,22 @@ function start-kube-apiserver {
   params+=" --allow-privileged=true"
   params+=" --cloud-provider=gce"
   params+=" --client-ca-file=${CA_CERT_BUNDLE_PATH}"
-  params+=" --etcd-servers=${ETCD_SERVERS:-http://127.0.0.1:2379}"
+  if [[ -n "${ETCD_APISERVER_CA_KEY:-}" && -n "${ETCD_APISERVER_CA_CERT:-}" && -n "${ETCD_APISERVER_SERVER_KEY:-}" && -n "${ETCD_APISERVER_SERVER_CERT:-}" && -n "${ETCD_APISERVER_CLIENT_KEY:-}" && -n "${ETCD_APISERVER_CLIENT_CERT:-}" ]]; then
+      params+=" --etcd-servers=${ETCD_SERVERS:-https://127.0.0.1:2379}"
+      params+=" --etcd-cafile=${ETCD_APISERVER_CA_CERT_PATH}"
+      params+=" --etcd-certfile=${ETCD_APISERVER_CLIENT_CERT_PATH}"
+      params+=" --etcd-keyfile=${ETCD_APISERVER_CLIENT_KEY_PATH}"
+  elif [[ -z "${ETCD_APISERVER_CA_KEY:-}" && -z "${ETCD_APISERVER_CA_CERT:-}" && -z "${ETCD_APISERVER_SERVER_KEY:-}" && -z "${ETCD_APISERVER_SERVER_CERT:-}" && -z "${ETCD_APISERVER_CLIENT_KEY:-}" && -z "${ETCD_APISERVER_CLIENT_CERT:-}" ]]; then
+      params+=" --etcd-servers=${ETCD_SERVERS:-http://127.0.0.1:2379}"
+      echo "WARNING: ALL of ETCD_APISERVER_CA_KEY, ETCD_APISERVER_CA_CERT, ETCD_APISERVER_SERVER_KEY, ETCD_APISERVER_SERVER_CERT, ETCD_APISERVER_CLIENT_KEY and ETCD_APISERVER_CLIENT_CERT are missing, mTLS between etcd server and kube-apiserver is not enabled."
+  else
+      echo "ERROR: Some of ETCD_APISERVER_CA_KEY, ETCD_APISERVER_CA_CERT, ETCD_APISERVER_SERVER_KEY, ETCD_APISERVER_SERVER_CERT, ETCD_APISERVER_CLIENT_KEY and ETCD_APISERVER_CLIENT_CERT are missing, mTLS between etcd server and kube-apiserver cannot be enabled. Please provide all mTLS credential."
+      exit 1
+  fi
   if [[ -z "${ETCD_SERVERS:-}" ]]; then
     params+=" --etcd-servers-overrides=${ETCD_SERVERS_OVERRIDES:-/events#http://127.0.0.1:4002}"
   elif [[ -n "${ETCD_SERVERS_OVERRIDES:-}" ]]; then
     params+=" --etcd-servers-overrides=${ETCD_SERVERS_OVERRIDES:-}"
-  fi
-  if [[ -n "${ETCD_APISERVER_CA_KEY:-}" && -n "${ETCD_APISERVER_CA_CERT:-}" && -n "${ETCD_APISERVER_CLIENT_KEY:-}" && -n "${ETCD_APISERVER_CLIENT_CERT:-}" ]]; then
-    params+=" --etcd-cafile=${ETCD_APISERVER_CA_CERT_PATH}"
-    params+=" --etcd-certfile=${ETCD_APISERVER_CLIENT_CERT_PATH}"
-    params+=" --etcd-keyfile=${ETCD_APISERVER_CLIENT_KEY_PATH}"
   fi
   params+=" --secure-port=443"
   if [[ "${ENABLE_APISERVER_INSECURE_PORT:-false}" != "true" ]]; then
@@ -1731,21 +1814,18 @@ function start-kube-apiserver {
     params+=" --kubelet-certificate-authority=${CA_CERT_BUNDLE_PATH}"
   fi
 
-  local admission_controller_config_mount=""
-  local admission_controller_config_volume=""
-  local image_policy_webhook_config_mount=""
-  local image_policy_webhook_config_volume=""
   if [[ -n "${ADMISSION_CONTROL:-}" ]]; then
     params+=" --admission-control=${ADMISSION_CONTROL}"
-    if [[ ${ADMISSION_CONTROL} == *"ImagePolicyWebhook"* ]]; then
-      params+=" --admission-control-config-file=/etc/admission_controller.config"
-      # Mount the file to configure admission controllers if ImagePolicyWebhook is set.
-      admission_controller_config_mount="{\"name\": \"admissioncontrollerconfigmount\",\"mountPath\": \"/etc/admission_controller.config\", \"readOnly\": false},"
-      admission_controller_config_volume="{\"name\": \"admissioncontrollerconfigmount\",\"hostPath\": {\"path\": \"/etc/admission_controller.config\", \"type\": \"FileOrCreate\"}},"
-      # Mount the file to configure the ImagePolicyWebhook's webhook.
-      image_policy_webhook_config_mount="{\"name\": \"imagepolicywebhookconfigmount\",\"mountPath\": \"/etc/gcp_image_review.config\", \"readOnly\": false},"
-      image_policy_webhook_config_volume="{\"name\": \"imagepolicywebhookconfigmount\",\"hostPath\": {\"path\": \"/etc/gcp_image_review.config\", \"type\": \"FileOrCreate\"}},"
-    fi
+    params+=" --admission-control-config-file=/etc/srv/kubernetes/admission_controller_config.yaml"
+  fi
+
+  # If GKE exec auth support is requested for webhooks, then
+  # gke-exec-auth-plugin needs to be mounted into the kube-apiserver container.
+  local webhook_exec_auth_plugin_mount=""
+  local webhook_exec_auth_plugin_volume=""
+  if [[ -n "${WEBHOOK_GKE_EXEC_AUTH:-}" ]]; then
+    webhook_exec_auth_plugin_mount='{"name": "gkeauth", "mountPath": "/usr/bin/gke-exec-auth-plugin", "readOnly": true},'
+    webhook_exec_auth_plugin_volume='{"name": "gkeauth", "hostPath": {"path": "/home/kubernetes/bin/gke-exec-auth-plugin", "type": "File"}},'
   fi
 
   if [[ -n "${KUBE_APISERVER_REQUEST_TIMEOUT:-}" ]]; then
@@ -1867,10 +1947,8 @@ function start-kube-apiserver {
   sed -i -e "s@{{audit_policy_config_volume}}@${audit_policy_config_volume}@g" "${src_file}"
   sed -i -e "s@{{audit_webhook_config_mount}}@${audit_webhook_config_mount}@g" "${src_file}"
   sed -i -e "s@{{audit_webhook_config_volume}}@${audit_webhook_config_volume}@g" "${src_file}"
-  sed -i -e "s@{{admission_controller_config_mount}}@${admission_controller_config_mount}@g" "${src_file}"
-  sed -i -e "s@{{admission_controller_config_volume}}@${admission_controller_config_volume}@g" "${src_file}"
-  sed -i -e "s@{{image_policy_webhook_config_mount}}@${image_policy_webhook_config_mount}@g" "${src_file}"
-  sed -i -e "s@{{image_policy_webhook_config_volume}}@${image_policy_webhook_config_volume}@g" "${src_file}"
+  sed -i -e "s@{{webhook_exec_auth_plugin_mount}}@${webhook_exec_auth_plugin_mount}@g" "${src_file}"
+  sed -i -e "s@{{webhook_exec_auth_plugin_volume}}@${webhook_exec_auth_plugin_volume}@g" "${src_file}"
 
   cp "${src_file}" "${ETC_MANIFESTS:-/etc/kubernetes/manifests}"
 }
@@ -1976,40 +2054,6 @@ function update-node-label() {
     fi
     (( retries-- ))
     sleep 3
-  done
-}
-
-# Applies encryption provider config.
-# This function may be triggered in two scenarios:
-# 1. Decryption of etcd
-# 2. Encryption of etcd is added after the cluster is deployed
-# Both cases require that the existing secrets in etcd be re-proceeded.
-#
-# Assumes vars (supplied via kube-env):
-# ENCRYPTION_PROVIDER_CONFIG_FORCE
-function apply-encryption-config() {
-  if [[ "${ENCRYPTION_PROVIDER_CONFIG_FORCE:-false}" == "false" ]]; then
-    return
-  fi
-
-  # need kube-apiserver to be ready
-  until kubectl get secret; do
-    sleep ${ENCRYPTION_PROVIDER_CONFIG_FORCE_DELAY:-5}
-  done
-
-  retries=${ENCRYPTION_PROVIDER_CONFIG_FORCE_RETRIES:-5}
-  # The command below may fail when a conflict is detected during an update on a secret (something
-  # else updated the secret in the middle of our update).
-  # TODO: Retry only on errors caused by a conflict.
-  until (( retries == 0 )); do
-    # forces all secrets to be re-written to etcd, and in the process either encrypting or decrypting them
-    # https://kubernetes.io/docs/tasks/administer-cluster/encrypt-data/
-    if kubectl get secrets --all-namespaces -o json | kubectl replace -f -; then
-      break
-    fi
-
-    (( retries-- ))
-    sleep "${ENCRYPTION_PROVIDER_CONFIG_FORCE_RETRY_SLEEP:-3}"
   done
 }
 
@@ -3051,7 +3095,6 @@ function main() {
     start-cluster-autoscaler
     start-lb-controller
     update-legacy-addon-node-labels &
-    apply-encryption-config &
   else
     if [[ "${KUBE_PROXY_DAEMONSET:-}" != "true" ]]; then
       start-kube-proxy

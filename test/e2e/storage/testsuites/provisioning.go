@@ -130,8 +130,10 @@ func (p *provisioningTestSuite) defineTests(driver TestDriver, pattern testpatte
 		if l.sc == nil {
 			framework.Skipf("Driver %q does not define Dynamic Provision StorageClass - skipping", dInfo.Name)
 		}
-		l.pvc = getClaim(claimSize, l.config.Framework.Namespace.Name)
-		l.pvc.Spec.StorageClassName = &l.sc.Name
+		l.pvc = framework.MakePersistentVolumeClaim(framework.PersistentVolumeClaimConfig{
+			ClaimSize:        claimSize,
+			StorageClassName: &(l.sc.Name),
+		}, l.config.Framework.Namespace.Name)
 		e2elog.Logf("In creating storage class object and pvc object for driver - sc: %v, pvc: %v", l.sc, l.pvc)
 		l.testCase = &StorageClassTest{
 			Client:       l.config.Framework.ClientSet,
@@ -151,16 +153,6 @@ func (p *provisioningTestSuite) defineTests(driver TestDriver, pattern testpatte
 		validateMigrationVolumeOpCounts(f.ClientSet, dInfo.InTreePluginName, l.intreeOps, l.migratedOps)
 	}
 
-	ginkgo.It("should provision storage with defaults", func() {
-		init()
-		defer cleanup()
-
-		l.testCase.PvCheck = func(claim *v1.PersistentVolumeClaim) {
-			PVWriteReadSingleNodeCheck(l.cs, claim, framework.NodeSelection{Name: l.config.ClientNodeName})
-		}
-		l.testCase.TestDynamicProvisioning()
-	})
-
 	ginkgo.It("should provision storage with mount options", func() {
 		if dInfo.SupportedMountOption == nil {
 			framework.Skipf("Driver %q does not define supported mount option - skipping", dInfo.Name)
@@ -172,29 +164,6 @@ func (p *provisioningTestSuite) defineTests(driver TestDriver, pattern testpatte
 		l.testCase.Class.MountOptions = dInfo.SupportedMountOption.Union(dInfo.RequiredMountOption).List()
 		l.testCase.PvCheck = func(claim *v1.PersistentVolumeClaim) {
 			PVWriteReadSingleNodeCheck(l.cs, claim, framework.NodeSelection{Name: l.config.ClientNodeName})
-		}
-		l.testCase.TestDynamicProvisioning()
-	})
-
-	ginkgo.It("should access volume from different nodes", func() {
-		init()
-		defer cleanup()
-
-		// The assumption is that if the test hasn't been
-		// locked onto a single node, then the driver is
-		// usable on all of them *and* supports accessing a volume
-		// from any node.
-		if l.config.ClientNodeName != "" {
-			framework.Skipf("Driver %q only supports testing on one node - skipping", dInfo.Name)
-		}
-
-		// Ensure that we actually have more than one node.
-		nodes := framework.GetReadySchedulableNodesOrDie(l.cs)
-		if len(nodes.Items) <= 1 {
-			framework.Skipf("need more than one node - skipping")
-		}
-		l.testCase.PvCheck = func(claim *v1.PersistentVolumeClaim) {
-			PVMultiNodeCheck(l.cs, claim, framework.NodeSelection{Name: l.config.ClientNodeName})
 		}
 		l.testCase.TestDynamicProvisioning()
 	})
@@ -237,12 +206,12 @@ func (t StorageClassTest) TestDynamicProvisioning() *v1.PersistentVolume {
 
 	var err error
 	if class != nil {
-		gomega.Expect(*claim.Spec.StorageClassName).To(gomega.Equal(class.Name))
+		framework.ExpectEqual(*claim.Spec.StorageClassName, class.Name)
 		ginkgo.By("creating a StorageClass " + class.Name)
 		_, err = client.StorageV1().StorageClasses().Create(class)
 		// The "should provision storage with snapshot data source" test already has created the class.
 		// TODO: make class creation optional and remove the IsAlreadyExists exception
-		gomega.Expect(err == nil || apierrs.IsAlreadyExists(err)).To(gomega.Equal(true))
+		framework.ExpectEqual(err == nil || apierrs.IsAlreadyExists(err), true)
 		class, err = client.StorageV1().StorageClasses().Get(class.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err)
 		defer func() {
@@ -300,11 +269,11 @@ func (t StorageClassTest) checkProvisioning(client clientset.Interface, claim *v
 	// Check sizes
 	expectedCapacity := resource.MustParse(t.ExpectedSize)
 	pvCapacity := pv.Spec.Capacity[v1.ResourceName(v1.ResourceStorage)]
-	gomega.Expect(pvCapacity.Value()).To(gomega.Equal(expectedCapacity.Value()), "pvCapacity is not equal to expectedCapacity")
+	framework.ExpectEqual(pvCapacity.Value(), expectedCapacity.Value(), "pvCapacity is not equal to expectedCapacity")
 
 	requestedCapacity := resource.MustParse(t.ClaimSize)
 	claimCapacity := claim.Spec.Resources.Requests[v1.ResourceName(v1.ResourceStorage)]
-	gomega.Expect(claimCapacity.Value()).To(gomega.Equal(requestedCapacity.Value()), "claimCapacity is not equal to requestedCapacity")
+	framework.ExpectEqual(claimCapacity.Value(), requestedCapacity.Value(), "claimCapacity is not equal to requestedCapacity")
 
 	// Check PV properties
 	ginkgo.By("checking the PV")
@@ -322,17 +291,17 @@ func (t StorageClassTest) checkProvisioning(client clientset.Interface, claim *v
 		gomega.Expect(found).To(gomega.BeTrue())
 	}
 
-	gomega.Expect(pv.Spec.ClaimRef.Name).To(gomega.Equal(claim.ObjectMeta.Name))
-	gomega.Expect(pv.Spec.ClaimRef.Namespace).To(gomega.Equal(claim.ObjectMeta.Namespace))
+	framework.ExpectEqual(pv.Spec.ClaimRef.Name, claim.ObjectMeta.Name)
+	framework.ExpectEqual(pv.Spec.ClaimRef.Namespace, claim.ObjectMeta.Namespace)
 	if class == nil {
-		gomega.Expect(pv.Spec.PersistentVolumeReclaimPolicy).To(gomega.Equal(v1.PersistentVolumeReclaimDelete))
+		framework.ExpectEqual(pv.Spec.PersistentVolumeReclaimPolicy, v1.PersistentVolumeReclaimDelete)
 	} else {
-		gomega.Expect(pv.Spec.PersistentVolumeReclaimPolicy).To(gomega.Equal(*class.ReclaimPolicy))
-		gomega.Expect(pv.Spec.MountOptions).To(gomega.Equal(class.MountOptions))
+		framework.ExpectEqual(pv.Spec.PersistentVolumeReclaimPolicy, *class.ReclaimPolicy)
+		framework.ExpectEqual(pv.Spec.MountOptions, class.MountOptions)
 	}
 	if claim.Spec.VolumeMode != nil {
 		gomega.Expect(pv.Spec.VolumeMode).NotTo(gomega.BeNil())
-		gomega.Expect(*pv.Spec.VolumeMode).To(gomega.Equal(*claim.Spec.VolumeMode))
+		framework.ExpectEqual(*pv.Spec.VolumeMode, *claim.Spec.VolumeMode)
 	}
 	return pv
 }
@@ -404,7 +373,7 @@ func PVWriteReadSingleNodeCheck(client clientset.Interface, claim *v1.Persistent
 //
 // This is a common test that can be called from a StorageClassTest.PvCheck.
 func PVMultiNodeCheck(client clientset.Interface, claim *v1.PersistentVolumeClaim, node framework.NodeSelection) {
-	gomega.Expect(node.Name).To(gomega.Equal(""), "this test only works when not locked onto a single node")
+	framework.ExpectEqual(node.Name, "", "this test only works when not locked onto a single node")
 
 	var pod *v1.Pod
 	defer func() {
@@ -451,7 +420,7 @@ func (t StorageClassTest) TestBindingWaitForFirstConsumer(nodeSelector map[strin
 // TestBindingWaitForFirstConsumerMultiPVC tests the binding with WaitForFirstConsumer mode
 func (t StorageClassTest) TestBindingWaitForFirstConsumerMultiPVC(claims []*v1.PersistentVolumeClaim, nodeSelector map[string]string, expectUnschedulable bool) ([]*v1.PersistentVolume, *v1.Node) {
 	var err error
-	gomega.Expect(len(claims)).ToNot(gomega.Equal(0))
+	framework.ExpectNotEqual(len(claims), 0)
 	namespace := claims[0].Namespace
 
 	ginkgo.By("creating a storage class " + t.Class.Name)
@@ -526,7 +495,7 @@ func (t StorageClassTest) TestBindingWaitForFirstConsumerMultiPVC(claims []*v1.P
 		framework.ExpectNoError(err)
 		pvs = append(pvs, pv)
 	}
-	gomega.Expect(len(pvs)).To(gomega.Equal(len(createdClaims)))
+	framework.ExpectEqual(len(pvs), len(createdClaims))
 	return pvs, node
 }
 
@@ -608,7 +577,7 @@ func verifyPVCsPending(client clientset.Interface, pvcs []*v1.PersistentVolumeCl
 		// Get new copy of the claim
 		claim, err := client.CoreV1().PersistentVolumeClaims(claim.Namespace).Get(claim.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(claim.Status.Phase).To(gomega.Equal(v1.ClaimPending))
+		framework.ExpectEqual(claim.Status.Phase, v1.ClaimPending)
 	}
 }
 

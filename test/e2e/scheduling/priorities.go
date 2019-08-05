@@ -23,12 +23,11 @@ import (
 	"time"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 
 	// ensure libs have a chance to initialize
 	_ "github.com/stretchr/testify/assert"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -78,11 +77,17 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		cs = f.ClientSet
 		ns = f.Namespace.Name
 		nodeList = &v1.NodeList{}
+		var err error
 
 		e2enode.WaitForTotalHealthy(cs, time.Minute)
-		_, nodeList = framework.GetMasterAndWorkerNodesOrDie(cs)
+		_, nodeList, err = e2enode.GetMasterAndWorkerNodes(cs)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
 
-		err := framework.CheckTestingNSDeletedExcept(cs, ns)
+		err = framework.CheckTestingNSDeletedExcept(cs, ns)
 		framework.ExpectNoError(err)
 		err = e2epod.WaitForPodsRunningReady(cs, metav1.NamespaceSystem, int32(systemPodsNo), 0, framework.PodReadyBeforeTimeout, map[string]string{})
 		framework.ExpectNoError(err)
@@ -146,7 +151,7 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		labelPod, err := cs.CoreV1().Pods(ns).Get(labelPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
 		ginkgo.By("Verify the pod was scheduled to the expected node.")
-		gomega.Expect(labelPod.Spec.NodeName).NotTo(gomega.Equal(nodeName))
+		framework.ExpectNotEqual(labelPod.Spec.NodeName, nodeName)
 	})
 
 	ginkgo.It("Pod should avoid nodes that have avoidPod annotation", func() {
@@ -195,7 +200,7 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		}
 		success, err := common.ObserveNodeUpdateAfterAction(f, nodeName, predicate, action)
 		framework.ExpectNoError(err)
-		gomega.Expect(success).To(gomega.Equal(true))
+		framework.ExpectEqual(success, true)
 
 		defer framework.RemoveAvoidPodsOffNode(cs, nodeName)
 
@@ -208,7 +213,7 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		framework.ExpectNoError(err)
 		ginkgo.By(fmt.Sprintf("Verify the pods should not scheduled to the node: %s", nodeName))
 		for _, pod := range testPods.Items {
-			gomega.Expect(pod.Spec.NodeName).NotTo(gomega.Equal(nodeName))
+			framework.ExpectNotEqual(pod.Spec.NodeName, nodeName)
 		}
 	})
 
@@ -216,30 +221,8 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		// make the nodes have balanced cpu,mem usage ratio
 		err := createBalancedPodForNodes(f, cs, ns, nodeList.Items, podRequestedResource, 0.5)
 		framework.ExpectNoError(err)
-		//we need apply more taints on a node, because one match toleration only count 1
-		ginkgo.By("Trying to apply 10 taint on the nodes except first one.")
+		// Apply 10 taints to first node
 		nodeName := nodeList.Items[0].Name
-
-		for index, node := range nodeList.Items {
-			if index == 0 {
-				continue
-			}
-			for i := 0; i < 10; i++ {
-				testTaint := addRandomTaitToNode(cs, node.Name)
-				defer framework.RemoveTaintOffNode(cs, node.Name, *testTaint)
-			}
-		}
-		ginkgo.By("Create a pod without any tolerations")
-		tolerationPodName := "without-tolerations"
-		pod := createPausePod(f, pausePodConfig{
-			Name: tolerationPodName,
-		})
-		framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
-
-		ginkgo.By("Pod should prefer scheduled to the node don't have the taint.")
-		tolePod, err := cs.CoreV1().Pods(ns).Get(tolerationPodName, metav1.GetOptions{})
-		framework.ExpectNoError(err)
-		gomega.Expect(tolePod.Spec.NodeName).To(gomega.Equal(nodeName))
 
 		ginkgo.By("Trying to apply 10 taint on the first node.")
 		var tolerations []v1.Toleration
@@ -248,18 +231,18 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 			tolerations = append(tolerations, v1.Toleration{Key: testTaint.Key, Value: testTaint.Value, Effect: testTaint.Effect})
 			defer framework.RemoveTaintOffNode(cs, nodeName, *testTaint)
 		}
-		tolerationPodName = "with-tolerations"
+		tolerationPodName := "with-tolerations"
 		ginkgo.By("Create a pod that tolerates all the taints of the first node.")
-		pod = createPausePod(f, pausePodConfig{
+		pod := createPausePod(f, pausePodConfig{
 			Name:        tolerationPodName,
 			Tolerations: tolerations,
 		})
 		framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
 
 		ginkgo.By("Pod should prefer scheduled to the node that pod can tolerate.")
-		tolePod, err = cs.CoreV1().Pods(ns).Get(tolerationPodName, metav1.GetOptions{})
+		tolePod, err := cs.CoreV1().Pods(ns).Get(tolerationPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
-		gomega.Expect(tolePod.Spec.NodeName).To(gomega.Equal(nodeName))
+		framework.ExpectEqual(tolePod.Spec.NodeName, nodeName)
 	})
 })
 
@@ -284,11 +267,11 @@ func createBalancedPodForNodes(f *framework.Framework, cs clientset.Interface, n
 	ratio = math.Max(maxCPUFraction, maxMemFraction)
 	for _, node := range nodes {
 		memAllocatable, found := node.Status.Allocatable[v1.ResourceMemory]
-		gomega.Expect(found).To(gomega.Equal(true))
+		framework.ExpectEqual(found, true)
 		memAllocatableVal := memAllocatable.Value()
 
 		cpuAllocatable, found := node.Status.Allocatable[v1.ResourceCPU]
-		gomega.Expect(found).To(gomega.Equal(true))
+		framework.ExpectEqual(found, true)
 		cpuAllocatableMil := cpuAllocatable.MilliValue()
 
 		needCreateResource := v1.ResourceList{}
@@ -342,7 +325,7 @@ func computeCPUMemFraction(cs clientset.Interface, node v1.Node, resource *v1.Re
 		}
 	}
 	cpuAllocatable, found := node.Status.Allocatable[v1.ResourceCPU]
-	gomega.Expect(found).To(gomega.Equal(true))
+	framework.ExpectEqual(found, true)
 	cpuAllocatableMil := cpuAllocatable.MilliValue()
 
 	floatOne := float64(1)
@@ -351,7 +334,7 @@ func computeCPUMemFraction(cs clientset.Interface, node v1.Node, resource *v1.Re
 		cpuFraction = floatOne
 	}
 	memAllocatable, found := node.Status.Allocatable[v1.ResourceMemory]
-	gomega.Expect(found).To(gomega.Equal(true))
+	framework.ExpectEqual(found, true)
 	memAllocatableVal := memAllocatable.Value()
 	memFraction := float64(totalRequestedMemResource) / float64(memAllocatableVal)
 	if memFraction > floatOne {

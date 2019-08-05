@@ -72,7 +72,6 @@ func TestRoundTrip(t *testing.T) {
 		if err := json.Unmarshal(openAPIJSON, &j); err != nil {
 			t.Fatal(err)
 		}
-		j = convertNullTypeToNullable(j)
 		j = stripIntOrStringType(j)
 		openAPIJSON, err = json.Marshal(j)
 		if err != nil {
@@ -94,49 +93,6 @@ func TestRoundTrip(t *testing.T) {
 		if !apiequality.Semantic.DeepEqual(internal, internalRoundTripped) {
 			t.Fatalf("%d: expected\n\t%#v, got \n\t%#v", i, internal, internalRoundTripped)
 		}
-	}
-}
-
-func convertNullTypeToNullable(x interface{}) interface{} {
-	switch x := x.(type) {
-	case map[string]interface{}:
-		if t, found := x["type"]; found {
-			switch t := t.(type) {
-			case []interface{}:
-				for i, typ := range t {
-					if s, ok := typ.(string); !ok || s != "null" {
-						continue
-					}
-					t = append(t[:i], t[i+1:]...)
-					switch len(t) {
-					case 0:
-						delete(x, "type")
-					case 1:
-						x["type"] = t[0]
-					default:
-						x["type"] = t
-					}
-					x["nullable"] = true
-					break
-				}
-			case string:
-				if t == "null" {
-					delete(x, "type")
-					x["nullable"] = true
-				}
-			}
-		}
-		for k := range x {
-			x[k] = convertNullTypeToNullable(x[k])
-		}
-		return x
-	case []interface{}:
-		for i := range x {
-			x[i] = convertNullTypeToNullable(x[i])
-		}
-		return x
-	default:
-		return x
 	}
 }
 
@@ -359,6 +315,63 @@ func TestValidateCustomResource(t *testing.T) {
 			for _, obj := range tt.failingObjects {
 				if err := ValidateCustomResource(obj, validator); err == nil {
 					t.Errorf("missing error for %v", obj)
+				}
+			}
+		})
+	}
+}
+
+func TestItemsProperty(t *testing.T) {
+	type args struct {
+		schema apiextensions.JSONSchemaProps
+		object interface{}
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+	}{
+		{"items in object", args{
+			apiextensions.JSONSchemaProps{
+				Properties: map[string]apiextensions.JSONSchemaProps{
+					"spec": {
+						Properties: map[string]apiextensions.JSONSchemaProps{
+							"replicas": {
+								Type: "integer",
+							},
+						},
+					},
+				},
+			},
+			map[string]interface{}{"spec": map[string]interface{}{"replicas": 1, "items": []string{"1", "2"}}},
+		}, false},
+		{"items in array", args{
+			apiextensions.JSONSchemaProps{
+				Properties: map[string]apiextensions.JSONSchemaProps{
+					"secrets": {
+						Type: "array",
+						Items: &apiextensions.JSONSchemaPropsOrArray{
+							Schema: &apiextensions.JSONSchemaProps{
+								Type: "string",
+							},
+						},
+					},
+				},
+			},
+			map[string]interface{}{"secrets": []string{"1", "2"}},
+		}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			validator, _, err := NewSchemaValidator(&apiextensions.CustomResourceValidation{OpenAPIV3Schema: &tt.args.schema})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateCustomResource(tt.args.object, validator); (err != nil) != tt.wantErr {
+				if err == nil {
+					t.Error("expected error, but didn't get one")
+				} else {
+					t.Errorf("unexpected validation error: %v", err)
 				}
 			}
 		})

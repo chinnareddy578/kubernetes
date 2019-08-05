@@ -438,7 +438,7 @@ run_pod_tests() {
   kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" 'valid-pod:'
 
   ## Patch can modify a local object
-  kubectl patch --local -f pkg/kubectl/validation/testdata/v1/validPod.yaml --patch='{"spec": {"restartPolicy":"Never"}}' -o yaml | grep -q "Never"
+  kubectl patch --local -f test/fixtures/pkg/kubectl/cmd/patch/validPod.yaml --patch='{"spec": {"restartPolicy":"Never"}}' -o yaml | grep -q "Never"
 
   ## Patch fails with type restore error and exit code 1
   output_message=$(! kubectl patch "${kube_flags[@]}" pod valid-pod -p='{"metadata":{"labels":"invalid"}}' 2>&1)
@@ -687,8 +687,20 @@ run_create_secret_tests() {
     # Post-condition: jsonpath for .metadata.namespace should be empty for object since --namespace was not explicitly specified
     kube::test::if_empty_string "${output_message}"
 
-    kubectl create configmap tester-create-cm -o json --dry-run | kubectl create "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps -f -
-    kubectl delete -ndefault "${kube_flags[@]}" configmap tester-create-cm
+
+    # check to make sure that replace correctly PUTs to a URL
+    kubectl create configmap tester-update-cm -o json --dry-run | kubectl create "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps -f -
+    output_message=$(kubectl create configmap tester-update-cm --from-literal=key1=config1 -o json --dry-run | kubectl replace "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps/tester-update-cm -f -)
+    # the message should show the body returned which will include a UID not present in the input
+    kube::test::if_has_string "${output_message}" 'uid'
+    # if the PUT was well-formed, the server will now have a key and value we can retrieve on GET
+    output_message=$(kubectl get "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps/tester-update-cm 2>&1 "${kube_flags[@]}")
+    kube::test::if_has_string "${output_message}" 'config1'
+
+    # if DELETE raw works correctly, this will delete the configmap
+    kubectl delete "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps/tester-update-cm
+    output_message=$(! kubectl get "${kube_flags[@]}" configmap tester-update-cm 2>&1 "${kube_flags[@]}")
+    kube::test::if_has_string "${output_message}" 'configmaps "tester-update-cm" not found'
 
     set +o nounset
     set +o errexit

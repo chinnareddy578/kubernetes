@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"strings"
 
 	yaml "gopkg.in/yaml.v2"
 )
@@ -31,9 +32,11 @@ type RegistryList struct {
 	E2eRegistry             string `yaml:"e2eRegistry"`
 	InvalidRegistry         string `yaml:"invalidRegistry"`
 	GcRegistry              string `yaml:"gcRegistry"`
+	GcrReleaseRegistry      string `yaml:"gcrReleaseRegistry"`
 	GoogleContainerRegistry string `yaml:"googleContainerRegistry"`
 	PrivateRegistry         string `yaml:"privateRegistry"`
 	SampleRegistry          string `yaml:"sampleRegistry"`
+	QuayK8sCSI              string `yaml:"quayK8sCSI"`
 }
 
 // Config holds an images registry, name, and version
@@ -65,9 +68,11 @@ func initReg() RegistryList {
 		E2eRegistry:             "gcr.io/kubernetes-e2e-test-images",
 		InvalidRegistry:         "invalid.com/invalid",
 		GcRegistry:              "k8s.gcr.io",
+		GcrReleaseRegistry:      "gcr.io/gke-release",
 		GoogleContainerRegistry: "gcr.io/google-containers",
 		PrivateRegistry:         "gcr.io/k8s-authenticated-test",
 		SampleRegistry:          "gcr.io/google-samples",
+		QuayK8sCSI:              "quay.io/k8scsi",
 	}
 	repoList := os.Getenv("KUBE_TEST_REPO_LIST")
 	if repoList == "" {
@@ -90,10 +95,13 @@ var (
 	registry                = initReg()
 	dockerLibraryRegistry   = registry.DockerLibraryRegistry
 	e2eRegistry             = registry.E2eRegistry
+	e2eGcRegistry           = "gcr.io/kubernetes-e2e-test-images"
 	gcAuthenticatedRegistry = registry.GcAuthenticatedRegistry
 	gcRegistry              = registry.GcRegistry
+	gcrReleaseRegistry      = registry.GcrReleaseRegistry
 	googleContainerRegistry = registry.GoogleContainerRegistry
 	invalidRegistry         = registry.InvalidRegistry
+	quayK8sCSI              = registry.QuayK8sCSI
 	// PrivateRegistry is an image repository that requires authentication
 	PrivateRegistry = registry.PrivateRegistry
 	sampleRegistry  = registry.SampleRegistry
@@ -103,18 +111,14 @@ var (
 )
 
 const (
-	// CRDConversionWebhook image
-	CRDConversionWebhook = iota
 	// Agnhost image
-	Agnhost
+	Agnhost = iota
 	// Alpine image
 	Alpine
 	// APIServer image
 	APIServer
 	// AppArmorLoader image
 	AppArmorLoader
-	// AuditProxy image
-	AuditProxy
 	// AuthenticatedAlpine image
 	AuthenticatedAlpine
 	// AuthenticatedWindowsNanoServer image
@@ -133,28 +137,20 @@ const (
 	DebianBase
 	// EchoServer image
 	EchoServer
-	// EntrypointTester image
-	EntrypointTester
 	// Etcd image
 	Etcd
 	// GBFrontend image
 	GBFrontend
-	// GBRedisSlave image
-	GBRedisSlave
 	// Httpd image
 	Httpd
 	// HttpdNew image
 	HttpdNew
-	// InClusterClient image
-	InClusterClient
 	// Invalid image
 	Invalid
 	// InvalidRegistryImage image
 	InvalidRegistryImage
 	// IpcUtils image
 	IpcUtils
-	// Iperf image
-	Iperf
 	// JessieDnsutils image
 	JessieDnsutils
 	// Kitten image
@@ -178,8 +174,6 @@ const (
 	Pause
 	// Perl image
 	Perl
-	// Porter image
-	Porter
 	// PrometheusDummyExporter image
 	PrometheusDummyExporter
 	// PrometheusToSd image
@@ -192,8 +186,6 @@ const (
 	ResourceController
 	// SdDummyExporter image
 	SdDummyExporter
-	// ServeHostname image
-	ServeHostname
 	// StartupScript image
 	StartupScript
 	// TestWebserver image
@@ -212,13 +204,12 @@ const (
 
 func initImageConfigs() map[int]Config {
 	configs := map[int]Config{}
-	configs[CRDConversionWebhook] = Config{e2eRegistry, "crd-conversion-webhook", "1.13rev2"}
-	configs[Agnhost] = Config{e2eRegistry, "agnhost", "2.1"}
+	configs[Agnhost] = Config{e2eRegistry, "agnhost", "2.4"}
 	configs[Alpine] = Config{dockerLibraryRegistry, "alpine", "3.7"}
 	configs[AuthenticatedAlpine] = Config{gcAuthenticatedRegistry, "alpine", "3.7"}
+	configs[AuthenticatedWindowsNanoServer] = Config{gcAuthenticatedRegistry, "windows-nanoserver", "v1"}
 	configs[APIServer] = Config{e2eRegistry, "sample-apiserver", "1.10"}
 	configs[AppArmorLoader] = Config{e2eRegistry, "apparmor-loader", "1.0"}
-	configs[AuditProxy] = Config{e2eRegistry, "audit-proxy", "1.0"}
 	configs[BusyBox] = Config{dockerLibraryRegistry, "busybox", "1.29"}
 	configs[CheckMetadataConcealment] = Config{e2eRegistry, "metadata-concealment", "1.2"}
 	configs[CudaVectorAdd] = Config{e2eRegistry, "cuda-vector-add", "1.0"}
@@ -226,17 +217,13 @@ func initImageConfigs() map[int]Config {
 	configs[Dnsutils] = Config{e2eRegistry, "dnsutils", "1.1"}
 	configs[DebianBase] = Config{googleContainerRegistry, "debian-base", "0.4.1"}
 	configs[EchoServer] = Config{e2eRegistry, "echoserver", "2.2"}
-	configs[EntrypointTester] = Config{e2eRegistry, "entrypoint-tester", "1.0"}
 	configs[Etcd] = Config{gcRegistry, "etcd", "3.3.10"}
 	configs[GBFrontend] = Config{sampleRegistry, "gb-frontend", "v6"}
-	configs[GBRedisSlave] = Config{sampleRegistry, "gb-redisslave", "v3"}
 	configs[Httpd] = Config{dockerLibraryRegistry, "httpd", "2.4.38-alpine"}
 	configs[HttpdNew] = Config{dockerLibraryRegistry, "httpd", "2.4.39-alpine"}
-	configs[InClusterClient] = Config{e2eRegistry, "inclusterclient", "1.0"}
 	configs[Invalid] = Config{gcRegistry, "invalid-image", "invalid-tag"}
 	configs[InvalidRegistryImage] = Config{invalidRegistry, "alpine", "3.1"}
 	configs[IpcUtils] = Config{e2eRegistry, "ipc-utils", "1.0"}
-	configs[Iperf] = Config{e2eRegistry, "iperf", "1.0"}
 	configs[JessieDnsutils] = Config{e2eRegistry, "jessie-dnsutils", "1.0"}
 	configs[Kitten] = Config{e2eRegistry, "kitten", "1.0"}
 	configs[Mounttest] = Config{e2eRegistry, "mounttest", "1.0"}
@@ -249,21 +236,19 @@ func initImageConfigs() map[int]Config {
 	// Pause - when these values are updated, also update cmd/kubelet/app/options/container_runtime.go
 	configs[Pause] = Config{gcRegistry, "pause", "3.1"}
 	configs[Perl] = Config{dockerLibraryRegistry, "perl", "5.26"}
-	configs[Porter] = Config{e2eRegistry, "porter", "1.0"}
-	configs[PrometheusDummyExporter] = Config{e2eRegistry, "prometheus-dummy-exporter", "v0.1.0"}
-	configs[PrometheusToSd] = Config{e2eRegistry, "prometheus-to-sd", "v0.5.0"}
-	configs[Redis] = Config{dockerLibraryRegistry, "redis", "3.2.9-alpine"}
+	configs[PrometheusDummyExporter] = Config{gcRegistry, "prometheus-dummy-exporter", "v0.1.0"}
+	configs[PrometheusToSd] = Config{gcRegistry, "prometheus-to-sd", "v0.5.0"}
+	configs[Redis] = Config{dockerLibraryRegistry, "redis", "5.0.5-alpine"}
 	configs[ResourceConsumer] = Config{e2eRegistry, "resource-consumer", "1.5"}
 	configs[ResourceController] = Config{e2eRegistry, "resource-consumer-controller", "1.0"}
 	configs[SdDummyExporter] = Config{gcRegistry, "sd-dummy-exporter", "v0.2.0"}
-	configs[ServeHostname] = Config{e2eRegistry, "serve-hostname", "1.1"}
 	configs[StartupScript] = Config{googleContainerRegistry, "startup-script", "v1"}
 	configs[TestWebserver] = Config{e2eRegistry, "test-webserver", "1.0"}
 	configs[VolumeNFSServer] = Config{e2eRegistry, "volume/nfs", "1.0"}
 	configs[VolumeISCSIServer] = Config{e2eRegistry, "volume/iscsi", "2.0"}
 	configs[VolumeGlusterServer] = Config{e2eRegistry, "volume/gluster", "1.0"}
 	configs[VolumeRBDServer] = Config{e2eRegistry, "volume/rbd", "1.0.1"}
-	configs[WindowsNanoServer] = Config{e2eRegistry, "windows-nanoserver", "v1"}
+	configs[WindowsNanoServer] = Config{e2eGcRegistry, "windows-nanoserver", "v1"}
 	return configs
 }
 
@@ -290,4 +275,39 @@ func (i *Config) GetE2EImage() string {
 // GetPauseImageName returns the pause image name with proper version
 func GetPauseImageName() string {
 	return GetE2EImage(Pause)
+}
+
+// ReplaceRegistryInImageURL replaces the registry in the image URL with a custom one
+func ReplaceRegistryInImageURL(imageURL string) (string, error) {
+	parts := strings.Split(imageURL, "/")
+	countParts := len(parts)
+	registryAndUser := strings.Join(parts[:countParts-1], "/")
+
+	switch registryAndUser {
+	case "gcr.io/kubernetes-e2e-test-images":
+		registryAndUser = e2eRegistry
+	case "k8s.gcr.io":
+		registryAndUser = gcRegistry
+	case "gcr.io/k8s-authenticated-test":
+		registryAndUser = PrivateRegistry
+	case "gcr.io/google-samples":
+		registryAndUser = sampleRegistry
+	case "gcr.io/gke-release":
+		registryAndUser = gcrReleaseRegistry
+	case "docker.io/library":
+		registryAndUser = dockerLibraryRegistry
+	case "quay.io/k8scsi":
+		registryAndUser = quayK8sCSI
+	default:
+		if countParts == 1 {
+			// We assume we found an image from docker hub library
+			// e.g. openjdk -> docker.io/library/openjdk
+			registryAndUser = dockerLibraryRegistry
+			break
+		}
+
+		return "", fmt.Errorf("Registry: %s is missing in test/utils/image/manifest.go, please add the registry, otherwise the test will fail on air-gapped clusters", registryAndUser)
+	}
+
+	return fmt.Sprintf("%s/%s", registryAndUser, parts[countParts-1]), nil
 }

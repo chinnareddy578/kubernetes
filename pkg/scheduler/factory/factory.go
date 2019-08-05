@@ -45,7 +45,7 @@ import (
 	storagelistersv1 "k8s.io/client-go/listers/storage/v1"
 	storagelistersv1beta1 "k8s.io/client-go/listers/storage/v1beta1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	"k8s.io/klog"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/pkg/features"
@@ -114,7 +114,7 @@ type Config struct {
 	Error func(*v1.Pod, error)
 
 	// Recorder is the EventRecorder to use
-	Recorder record.EventRecorder
+	Recorder events.EventRecorder
 
 	// Close this to shut down the scheduler.
 	StopEverything <-chan struct{}
@@ -149,10 +149,10 @@ type Configurator interface {
 	GetPredicateMetadataProducer() (predicates.PredicateMetadataProducer, error)
 	GetPredicates(predicateKeys sets.String) (map[string]predicates.FitPredicate, error)
 
-	// Needs to be exposed for things like integration tests where we want to make fake nodes.
-	GetNodeLister() corelisters.NodeLister
 	// Exposed for testing
 	GetClient() clientset.Interface
+
+	// TODO(#80216): Remove GetScheduledPodLister from the interface.
 	// Exposed for testing
 	GetScheduledPodLister() corelisters.PodLister
 
@@ -163,14 +163,11 @@ type Configurator interface {
 }
 
 // configFactory is the default implementation of the scheduler.Configurator interface.
+// TODO(#80216): Remove pod lister.
 type configFactory struct {
 	client clientset.Interface
 	// a means to list all known scheduled pods.
 	scheduledPodLister corelisters.PodLister
-	// a means to list all known scheduled pods and pods assumed to have been scheduled.
-	podLister algorithm.PodLister
-	// a means to list all nodes
-	nodeLister corelisters.NodeLister
 	// a means to list all PersistentVolumes
 	pVLister corelisters.PersistentVolumeLister
 	// a means to list all PersistentVolumeClaims
@@ -279,9 +276,7 @@ func NewConfigFactory(args *ConfigFactoryArgs) Configurator {
 
 	c := &configFactory{
 		client:                         args.Client,
-		podLister:                      schedulerCache,
 		podQueue:                       internalqueue.NewSchedulingQueue(stopEverything, framework),
-		nodeLister:                     args.NodeInformer.Lister(),
 		pVLister:                       args.PvInformer.Lister(),
 		pVCLister:                      args.PvcInformer.Lister(),
 		serviceLister:                  args.ServiceInformer.Lister(),
@@ -322,11 +317,6 @@ func NewConfigFactory(args *ConfigFactoryArgs) Configurator {
 		c.podQueue.Close()
 	}()
 	return c
-}
-
-// GetNodeStore provides the cache to the nodes, mostly internal use, but may also be called by mock-tests.
-func (c *configFactory) GetNodeLister() corelisters.NodeLister {
-	return c.nodeLister
 }
 
 func (c *configFactory) GetHardPodAffinitySymmetricWeight() int32 {
@@ -489,7 +479,7 @@ func (c *configFactory) CreateFromKeys(predicateKeys, priorityKeys sets.String, 
 	return &Config{
 		SchedulerCache: c.schedulerCache,
 		// The scheduler only needs to consider schedulable nodes.
-		NodeLister:          &nodeLister{c.nodeLister},
+		NodeLister:          c.schedulerCache,
 		Algorithm:           algo,
 		GetBinder:           getBinderFunc(c.client, extenders),
 		PodConditionUpdater: &podConditionUpdater{c.client},
@@ -522,14 +512,6 @@ func getBinderFunc(client clientset.Interface, extenders []algorithm.SchedulerEx
 		}
 		return defaultBinder
 	}
-}
-
-type nodeLister struct {
-	corelisters.NodeLister
-}
-
-func (n *nodeLister) List() ([]*v1.Node, error) {
-	return n.NodeLister.List(labels.Everything())
 }
 
 func (c *configFactory) GetPriorityFunctionConfigs(priorityKeys sets.String) ([]priorities.PriorityConfig, error) {
@@ -569,14 +551,15 @@ func (c *configFactory) GetPredicates(predicateKeys sets.String) (map[string]pre
 
 func (c *configFactory) getPluginArgs() (*PluginFactoryArgs, error) {
 	return &PluginFactoryArgs{
-		PodLister:                      c.podLister,
+		PodLister:                      c.schedulerCache,
 		ServiceLister:                  c.serviceLister,
 		ControllerLister:               c.controllerLister,
 		ReplicaSetLister:               c.replicaSetLister,
 		StatefulSetLister:              c.statefulSetLister,
-		NodeLister:                     &nodeLister{c.nodeLister},
+		NodeLister:                     c.schedulerCache,
 		PDBLister:                      c.pdbLister,
-		NodeInfo:                       &predicates.CachedNodeInfo{NodeLister: c.nodeLister},
+		NodeInfo:                       c.schedulerCache,
+		CSINodeInfo:                    c.schedulerCache,
 		PVInfo:                         &predicates.CachedPersistentVolumeInfo{PersistentVolumeLister: c.pVLister},
 		PVCInfo:                        &predicates.CachedPersistentVolumeClaimInfo{PersistentVolumeClaimLister: c.pVCLister},
 		StorageClassInfo:               &predicates.CachedStorageClassInfo{StorageClassLister: c.storageClassLister},

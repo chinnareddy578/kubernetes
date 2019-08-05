@@ -47,17 +47,23 @@ var _ = SIGDescribe("[Feature:CloudProvider][Disruptive] Nodes", func() {
 		nodeDeleteCandidates := framework.GetReadySchedulableNodesOrDie(c)
 		nodeToDelete := nodeDeleteCandidates.Items[0]
 
-		origNodes := framework.GetReadyNodesIncludingTaintedOrDie(c)
+		origNodes, err := e2enode.GetReadyNodesIncludingTainted(c)
+		if err != nil {
+			e2elog.Logf("Unexpected error occurred: %v", err)
+		}
+		// TODO: write a wrapper for ExpectNoErrorWithOffset()
+		framework.ExpectNoErrorWithOffset(0, err)
+
 		e2elog.Logf("Original number of ready nodes: %d", len(origNodes.Items))
 
-		err := framework.DeleteNodeOnCloudProvider(&nodeToDelete)
+		err = framework.DeleteNodeOnCloudProvider(&nodeToDelete)
 		if err != nil {
 			e2elog.Failf("failed to delete node %q, err: %q", nodeToDelete.Name, err)
 		}
 
 		newNodes, err := e2enode.CheckReady(c, len(origNodes.Items)-1, 5*time.Minute)
 		gomega.Expect(err).To(gomega.BeNil())
-		gomega.Expect(len(newNodes)).To(gomega.Equal(len(origNodes.Items) - 1))
+		framework.ExpectEqual(len(newNodes), len(origNodes.Items)-1)
 
 		_, err = c.CoreV1().Nodes().Get(nodeToDelete.Name, metav1.GetOptions{})
 		if err == nil {

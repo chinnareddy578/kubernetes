@@ -70,6 +70,7 @@ type schedulerCache struct {
 	// a map from pod key to podState.
 	podStates map[string]*podState
 	nodes     map[string]*nodeInfoListItem
+	csiNodes  map[string]*storagev1beta1.CSINode
 	// headNode points to the most recently updated NodeInfo in "nodes". It is the
 	// head of the linked list.
 	headNode *nodeInfoListItem
@@ -109,6 +110,7 @@ func newSchedulerCache(ttl, period time.Duration, stop <-chan struct{}) *schedul
 
 		nodes:       make(map[string]*nodeInfoListItem),
 		nodeTree:    newNodeTree(nil),
+		csiNodes:    make(map[string]*storagev1beta1.CSINode),
 		assumedPods: make(map[string]bool),
 		podStates:   make(map[string]*podState),
 		imageStates: make(map[string]*imageState),
@@ -574,13 +576,7 @@ func (cache *schedulerCache) AddCSINode(csiNode *storagev1beta1.CSINode) error {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	n, ok := cache.nodes[csiNode.Name]
-	if !ok {
-		n = newNodeInfoListItem(schedulernodeinfo.NewNodeInfo())
-		cache.nodes[csiNode.Name] = n
-	}
-	n.info.SetCSINode(csiNode)
-	cache.moveNodeInfoToHead(csiNode.Name)
+	cache.csiNodes[csiNode.Name] = csiNode
 	return nil
 }
 
@@ -588,13 +584,7 @@ func (cache *schedulerCache) UpdateCSINode(oldCSINode, newCSINode *storagev1beta
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	n, ok := cache.nodes[newCSINode.Name]
-	if !ok {
-		n = newNodeInfoListItem(schedulernodeinfo.NewNodeInfo())
-		cache.nodes[newCSINode.Name] = n
-	}
-	n.info.SetCSINode(newCSINode)
-	cache.moveNodeInfoToHead(newCSINode.Name)
+	cache.csiNodes[newCSINode.Name] = newCSINode
 	return nil
 }
 
@@ -602,12 +592,11 @@ func (cache *schedulerCache) RemoveCSINode(csiNode *storagev1beta1.CSINode) erro
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
-	n, ok := cache.nodes[csiNode.Name]
+	_, ok := cache.csiNodes[csiNode.Name]
 	if !ok {
-		return fmt.Errorf("node %v is not found", csiNode.Name)
+		return fmt.Errorf("csinode %v is not found", csiNode.Name)
 	}
-	n.info.SetCSINode(nil)
-	cache.moveNodeInfoToHead(csiNode.Name)
+	delete(cache.csiNodes, csiNode.Name)
 	return nil
 }
 
@@ -706,4 +695,45 @@ func (cache *schedulerCache) expirePod(key string, ps *podState) error {
 
 func (cache *schedulerCache) NodeTree() *NodeTree {
 	return cache.nodeTree
+}
+
+// GetNodeInfo returns cached data for the node name.
+func (cache *schedulerCache) GetNodeInfo(nodeName string) (*v1.Node, error) {
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+
+	n, ok := cache.nodes[nodeName]
+	if !ok {
+		return nil, fmt.Errorf("node %q not found in cache", nodeName)
+	}
+
+	return n.info.Node(), nil
+}
+
+// ListNodes returns the cached list of nodes.
+func (cache *schedulerCache) ListNodes() []*v1.Node {
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+
+	nodes := make([]*v1.Node, 0, len(cache.nodes))
+	for _, node := range cache.nodes {
+		// Node info is sometimes not removed immediately. See schedulerCache.RemoveNode.
+		n := node.info.Node()
+		if n != nil {
+			nodes = append(nodes, n)
+		}
+	}
+	return nodes
+}
+
+func (cache *schedulerCache) GetCSINodeInfo(nodeName string) (*storagev1beta1.CSINode, error) {
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+
+	n, ok := cache.csiNodes[nodeName]
+	if !ok {
+		return nil, fmt.Errorf("error retrieving csinode '%v' from cache", nodeName)
+	}
+
+	return n, nil
 }
