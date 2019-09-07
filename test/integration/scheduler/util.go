@@ -42,10 +42,10 @@ import (
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/scale"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/events"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
-	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/controller/disruption"
 	"k8s.io/kubernetes/pkg/scheduler"
 	schedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
@@ -84,7 +84,6 @@ func createConfiguratorArgsWithPodInformer(
 	stopCh <-chan struct{},
 ) *factory.ConfigFactoryArgs {
 	return &factory.ConfigFactoryArgs{
-		SchedulerName:                  schedulerName,
 		Client:                         clientSet,
 		NodeInformer:                   informerFactory.Core().V1().Nodes(),
 		PodInformer:                    podInformer,
@@ -205,6 +204,13 @@ func initTestSchedulerWithOptions(
 
 	// set DisablePreemption option
 	context.schedulerConfig.DisablePreemption = disablePreemption
+	eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{
+		Interface: context.clientSet.EventsV1beta1().Events(""),
+	})
+	context.schedulerConfig.Recorder = eventBroadcaster.NewRecorder(
+		legacyscheme.Scheme,
+		v1.DefaultSchedulerName,
+	)
 
 	context.scheduler = scheduler.NewFromConfig(context.schedulerConfig)
 
@@ -222,16 +228,9 @@ func initTestSchedulerWithOptions(
 	// set setPodInformer if provided.
 	if setPodInformer {
 		go podInformer.Informer().Run(context.schedulerConfig.StopEverything)
-		controller.WaitForCacheSync("scheduler", context.schedulerConfig.StopEverything, podInformer.Informer().HasSynced)
+		cache.WaitForNamedCacheSync("scheduler", context.schedulerConfig.StopEverything, podInformer.Informer().HasSynced)
 	}
 
-	eventBroadcaster := events.NewBroadcaster(&events.EventSinkImpl{
-		Interface: context.clientSet.EventsV1beta1().Events(""),
-	})
-	context.schedulerConfig.Recorder = eventBroadcaster.NewRecorder(
-		legacyscheme.Scheme,
-		v1.DefaultSchedulerName,
-	)
 	stopCh := make(chan struct{})
 	eventBroadcaster.StartRecordingToSink(stopCh)
 
@@ -728,7 +727,7 @@ func waitForPDBsStable(context *testContext, pdbs []*policy.PodDisruptionBudget,
 // waitCachedPodsStable waits until scheduler cache has the given pods.
 func waitCachedPodsStable(context *testContext, pods []*v1.Pod) error {
 	return wait.Poll(time.Second, 30*time.Second, func() (bool, error) {
-		cachedPods, err := context.scheduler.Config().SchedulerCache.List(labels.Everything())
+		cachedPods, err := context.scheduler.SchedulerCache.List(labels.Everything())
 		if err != nil {
 			return false, err
 		}
@@ -740,7 +739,7 @@ func waitCachedPodsStable(context *testContext, pods []*v1.Pod) error {
 			if err1 != nil {
 				return false, err1
 			}
-			cachedPod, err2 := context.scheduler.Config().SchedulerCache.GetPod(actualPod)
+			cachedPod, err2 := context.scheduler.SchedulerCache.GetPod(actualPod)
 			if err2 != nil || cachedPod == nil {
 				return false, err2
 			}

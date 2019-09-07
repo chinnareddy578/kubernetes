@@ -25,8 +25,7 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
-	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/klog"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
@@ -39,9 +38,9 @@ import (
 )
 
 // CreateInitStaticPodManifestFiles will write all static pod manifest files needed to bring up the control plane.
-func CreateInitStaticPodManifestFiles(manifestDir string, cfg *kubeadmapi.InitConfiguration) error {
+func CreateInitStaticPodManifestFiles(manifestDir, kustomizeDir string, cfg *kubeadmapi.InitConfiguration) error {
 	klog.V(1).Infoln("[control-plane] creating static Pod files")
-	return CreateStaticPodFiles(manifestDir, &cfg.ClusterConfiguration, &cfg.LocalAPIEndpoint, kubeadmconstants.KubeAPIServer, kubeadmconstants.KubeControllerManager, kubeadmconstants.KubeScheduler)
+	return CreateStaticPodFiles(manifestDir, kustomizeDir, &cfg.ClusterConfiguration, &cfg.LocalAPIEndpoint, kubeadmconstants.KubeAPIServer, kubeadmconstants.KubeControllerManager, kubeadmconstants.KubeScheduler)
 }
 
 // GetStaticPodSpecs returns all staticPodSpecs actualized to the context of the current configuration
@@ -58,7 +57,7 @@ func GetStaticPodSpecs(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmap
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Command:         getAPIServerCommand(cfg, endpoint),
 			VolumeMounts:    staticpodutil.VolumeMountMapToSlice(mounts.GetVolumeMounts(kubeadmconstants.KubeAPIServer)),
-			LivenessProbe:   livenessProbe(staticpodutil.GetAPIServerProbeAddress(endpoint), int(endpoint.BindPort), v1.URISchemeHTTPS),
+			LivenessProbe:   staticpodutil.LivenessProbe(staticpodutil.GetAPIServerProbeAddress(endpoint), "/healthz", int(endpoint.BindPort), v1.URISchemeHTTPS),
 			Resources:       staticpodutil.ComponentResources("250m"),
 			Env:             getProxyEnvVars(),
 		}, mounts.GetVolumes(kubeadmconstants.KubeAPIServer)),
@@ -68,7 +67,7 @@ func GetStaticPodSpecs(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmap
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Command:         getControllerManagerCommand(cfg),
 			VolumeMounts:    staticpodutil.VolumeMountMapToSlice(mounts.GetVolumeMounts(kubeadmconstants.KubeControllerManager)),
-			LivenessProbe:   livenessProbe(staticpodutil.GetControllerManagerProbeAddress(cfg), kubeadmconstants.InsecureKubeControllerManagerPort, v1.URISchemeHTTP),
+			LivenessProbe:   staticpodutil.LivenessProbe(staticpodutil.GetControllerManagerProbeAddress(cfg), "/healthz", kubeadmconstants.InsecureKubeControllerManagerPort, v1.URISchemeHTTP),
 			Resources:       staticpodutil.ComponentResources("200m"),
 			Env:             getProxyEnvVars(),
 		}, mounts.GetVolumes(kubeadmconstants.KubeControllerManager)),
@@ -78,7 +77,7 @@ func GetStaticPodSpecs(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmap
 			ImagePullPolicy: v1.PullIfNotPresent,
 			Command:         getSchedulerCommand(cfg),
 			VolumeMounts:    staticpodutil.VolumeMountMapToSlice(mounts.GetVolumeMounts(kubeadmconstants.KubeScheduler)),
-			LivenessProbe:   livenessProbe(staticpodutil.GetSchedulerProbeAddress(cfg), kubeadmconstants.InsecureSchedulerPort, v1.URISchemeHTTP),
+			LivenessProbe:   staticpodutil.LivenessProbe(staticpodutil.GetSchedulerProbeAddress(cfg), "/healthz", kubeadmconstants.InsecureSchedulerPort, v1.URISchemeHTTP),
 			Resources:       staticpodutil.ComponentResources("100m"),
 			Env:             getProxyEnvVars(),
 		}, mounts.GetVolumes(kubeadmconstants.KubeScheduler)),
@@ -86,24 +85,8 @@ func GetStaticPodSpecs(cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmap
 	return staticPodSpecs
 }
 
-func livenessProbe(host string, port int, scheme v1.URIScheme) *v1.Probe {
-	return &v1.Probe{
-		Handler: v1.Handler{
-			HTTPGet: &v1.HTTPGetAction{
-				Host:   host,
-				Path:   "/healthz",
-				Port:   intstr.FromInt(port),
-				Scheme: scheme,
-			},
-		},
-		InitialDelaySeconds: 15,
-		TimeoutSeconds:      15,
-		FailureThreshold:    8,
-	}
-}
-
 // CreateStaticPodFiles creates all the requested static pod files.
-func CreateStaticPodFiles(manifestDir string, cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmapi.APIEndpoint, componentNames ...string) error {
+func CreateStaticPodFiles(manifestDir, kustomizeDir string, cfg *kubeadmapi.ClusterConfiguration, endpoint *kubeadmapi.APIEndpoint, componentNames ...string) error {
 	// gets the StaticPodSpecs, actualized for the current ClusterConfiguration
 	klog.V(1).Infoln("[control-plane] getting StaticPodSpecs")
 	specs := GetStaticPodSpecs(cfg, endpoint)
@@ -114,6 +97,15 @@ func CreateStaticPodFiles(manifestDir string, cfg *kubeadmapi.ClusterConfigurati
 		spec, exists := specs[componentName]
 		if !exists {
 			return errors.Errorf("couldn't retrieve StaticPodSpec for %q", componentName)
+		}
+
+		// if kustomizeDir is defined, customize the static pod manifest
+		if kustomizeDir != "" {
+			kustomizedSpec, err := staticpodutil.KustomizeStaticPod(&spec, kustomizeDir)
+			if err != nil {
+				return errors.Wrapf(err, "failed to kustomize static pod manifest file for %q", componentName)
+			}
+			spec = *kustomizedSpec
 		}
 
 		// writes the StaticPodSpec to disk
@@ -292,6 +284,7 @@ func getControllerManagerCommand(cfg *kubeadmapi.ClusterConfiguration) []string 
 	// Let the controller-manager allocate Node CIDRs for the Pod network.
 	// Each node will get a subspace of the address CIDR provided with --pod-network-cidr.
 	if cfg.Networking.PodSubnet != "" {
+		// TODO(Arvinderpal): Needs to be fixed once PR #73977 lands. Should be a list of maskSizes.
 		maskSize := calcNodeCidrSize(cfg.Networking.PodSubnet)
 		defaultArguments["allocate-node-cidrs"] = "true"
 		defaultArguments["cluster-cidr"] = cfg.Networking.PodSubnet
@@ -315,10 +308,13 @@ func getControllerManagerCommand(cfg *kubeadmapi.ClusterConfiguration) []string 
 
 // getSchedulerCommand builds the right scheduler command from the given config object and version
 func getSchedulerCommand(cfg *kubeadmapi.ClusterConfiguration) []string {
+	kubeconfigFile := filepath.Join(kubeadmconstants.KubernetesDir, kubeadmconstants.SchedulerKubeConfigFileName)
 	defaultArguments := map[string]string{
-		"bind-address": "127.0.0.1",
-		"leader-elect": "true",
-		"kubeconfig":   filepath.Join(kubeadmconstants.KubernetesDir, kubeadmconstants.SchedulerKubeConfigFileName),
+		"bind-address":              "127.0.0.1",
+		"leader-elect":              "true",
+		"kubeconfig":                kubeconfigFile,
+		"authentication-kubeconfig": kubeconfigFile,
+		"authorization-kubeconfig":  kubeconfigFile,
 	}
 
 	// TODO: The following code should be remvoved after dual-stack is GA.

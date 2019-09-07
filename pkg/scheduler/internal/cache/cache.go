@@ -124,13 +124,6 @@ func newNodeInfoListItem(ni *schedulernodeinfo.NodeInfo) *nodeInfoListItem {
 	}
 }
 
-// NewNodeInfoSnapshot initializes a NodeInfoSnapshot struct and returns it.
-func NewNodeInfoSnapshot() *NodeInfoSnapshot {
-	return &NodeInfoSnapshot{
-		NodeInfoMap: make(map[string]*schedulernodeinfo.NodeInfo),
-	}
-}
-
 // moveNodeInfoToHead moves a NodeInfo to the head of "cache.nodes" doubly
 // linked list. The head is the most recently updated NodeInfo.
 // We assume cache lock is already acquired.
@@ -210,7 +203,7 @@ func (cache *schedulerCache) Snapshot() *Snapshot {
 // beginning of every scheduling cycle.
 // This function tracks generation number of NodeInfo and updates only the
 // entries of an existing snapshot that have changed after the snapshot was taken.
-func (cache *schedulerCache) UpdateNodeInfoSnapshot(nodeSnapshot *NodeInfoSnapshot) error {
+func (cache *schedulerCache) UpdateNodeInfoSnapshot(nodeSnapshot *schedulernodeinfo.Snapshot) error {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	balancedVolumesEnabled := utilfeature.DefaultFeatureGate.Enabled(features.BalanceAttachedNodeVolumes)
@@ -567,7 +560,9 @@ func (cache *schedulerCache) RemoveNode(node *v1.Node) error {
 		cache.moveNodeInfoToHead(node.Name)
 	}
 
-	cache.nodeTree.RemoveNode(node)
+	if err := cache.nodeTree.RemoveNode(node); err != nil {
+		return err
+	}
 	cache.removeNodeImageStates(node)
 	return nil
 }

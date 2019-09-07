@@ -224,13 +224,22 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		// Apply 10 taints to first node
 		nodeName := nodeList.Items[0].Name
 
-		ginkgo.By("Trying to apply 10 taint on the first node.")
+		ginkgo.By("Trying to apply 10 (tolerable) taints on the first node.")
 		var tolerations []v1.Toleration
 		for i := 0; i < 10; i++ {
-			testTaint := addRandomTaitToNode(cs, nodeName)
+			testTaint := addRandomTaintToNode(cs, nodeName)
 			tolerations = append(tolerations, v1.Toleration{Key: testTaint.Key, Value: testTaint.Value, Effect: testTaint.Effect})
 			defer framework.RemoveTaintOffNode(cs, nodeName, *testTaint)
 		}
+		ginkgo.By("Adding 10 intolerable taints to all other nodes")
+		for i := 1; i < len(nodeList.Items); i++ {
+			node := nodeList.Items[i]
+			for i := 0; i < 10; i++ {
+				testTaint := addRandomTaintToNode(cs, node.Name)
+				defer framework.RemoveTaintOffNode(cs, node.Name, *testTaint)
+			}
+		}
+
 		tolerationPodName := "with-tolerations"
 		ginkgo.By("Create a pod that tolerates all the taints of the first node.")
 		pod := createPausePod(f, pausePodConfig{
@@ -390,7 +399,7 @@ func createRC(ns, rsName string, replicas int32, rcPodLabels map[string]string, 
 	return rc
 }
 
-func addRandomTaitToNode(cs clientset.Interface, nodeName string) *v1.Taint {
+func addRandomTaintToNode(cs clientset.Interface, nodeName string) *v1.Taint {
 	testTaint := v1.Taint{
 		Key:    fmt.Sprintf("kubernetes.io/e2e-taint-key-%s", string(uuid.NewUUID())),
 		Value:  fmt.Sprintf("testing-taint-value-%s", string(uuid.NewUUID())),
