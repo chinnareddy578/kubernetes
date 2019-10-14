@@ -54,6 +54,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework/testfiles"
 	"k8s.io/kubernetes/test/e2e/manifest"
 	testutils "k8s.io/kubernetes/test/utils"
+	imageutils "k8s.io/kubernetes/test/utils/image"
 
 	"github.com/onsi/ginkgo"
 )
@@ -827,15 +828,31 @@ func (j *TestJig) GetDistinctResponseFromIngress() (sets.String, error) {
 
 // NginxIngressController manages implementation details of Ingress on Nginx.
 type NginxIngressController struct {
-	Ns         string
-	rc         *v1.ReplicationController
-	pod        *v1.Pod
-	Client     clientset.Interface
-	externalIP string
+	Ns     string
+	rc     *v1.ReplicationController
+	pod    *v1.Pod
+	Client clientset.Interface
+	lbSvc  *v1.Service
 }
 
 // Init initializes the NginxIngressController
 func (cont *NginxIngressController) Init() {
+	// Set up a LoadBalancer service in front of nginx ingress controller and pass it via
+	// --publish-service flag (see <IngressManifestPath>/nginx/rc.yaml) to make it work in private
+	// clusters, i.e. clusters where nodes don't have public IPs.
+	framework.Logf("Creating load balancer service for nginx ingress controller")
+	serviceJig := e2eservice.NewTestJig(cont.Client, "nginx-ingress-lb")
+	serviceJig.CreateTCPServiceOrFail(cont.Ns, func(svc *v1.Service) {
+		svc.Spec.Type = v1.ServiceTypeLoadBalancer
+		svc.Spec.Selector = map[string]string{"k8s-app": "nginx-ingress-lb"}
+		svc.Spec.Ports = []v1.ServicePort{
+			{Name: "http", Port: 80},
+			{Name: "https", Port: 443},
+			{Name: "stats", Port: 18080}}
+	})
+	cont.lbSvc = serviceJig.WaitForLoadBalancerOrFail(cont.Ns, "nginx-ingress-lb", e2eservice.GetServiceLoadBalancerCreationTimeout(cont.Client))
+	serviceJig.SanityCheckService(cont.lbSvc, v1.ServiceTypeLoadBalancer)
+
 	read := func(file string) string {
 		return string(testfiles.ReadOrDie(filepath.Join(IngressManifestPath, "nginx", file)))
 	}
@@ -855,9 +872,16 @@ func (cont *NginxIngressController) Init() {
 		framework.Failf("Failed to find nginx ingress controller pods with selector %v", sel)
 	}
 	cont.pod = &pods.Items[0]
-	cont.externalIP, err = framework.GetHostExternalAddress(cont.Client, cont.pod)
-	framework.ExpectNoError(err)
-	framework.Logf("ingress controller running in pod %v on ip %v", cont.pod.Name, cont.externalIP)
+	framework.Logf("ingress controller running in pod %v", cont.pod.Name)
+}
+
+// TearDown cleans up the NginxIngressController.
+func (cont *NginxIngressController) TearDown() {
+	if cont.lbSvc == nil {
+		framework.Logf("No LoadBalancer service created, no cleanup necessary")
+		return
+	}
+	e2eservice.WaitForServiceDeletedWithFinalizer(cont.Client, cont.Ns, cont.lbSvc.Name)
 }
 
 func generateBacksideHTTPSIngressSpec(ns string) *networkingv1beta1.Ingress {
@@ -921,7 +945,7 @@ func generateBacksideHTTPSDeploymentSpec() *appsv1.Deployment {
 					Containers: []v1.Container{
 						{
 							Name:  "echoheaders-https",
-							Image: "k8s.gcr.io/echoserver:1.10",
+							Image: imageutils.GetE2EImage(imageutils.EchoServer),
 							Ports: []v1.ContainerPort{{
 								ContainerPort: 8443,
 								Name:          "echo-443",

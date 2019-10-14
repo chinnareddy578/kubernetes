@@ -323,7 +323,13 @@ func NewProxier(ipt utiliptables.Interface,
 	}
 	burstSyncs := 2
 	klog.V(3).Infof("minSyncPeriod: %v, syncPeriod: %v, burstSyncs: %d", minSyncPeriod, syncPeriod, burstSyncs)
-	proxier.syncRunner = async.NewBoundedFrequencyRunner("sync-runner", proxier.syncProxyRules, minSyncPeriod, syncPeriod, burstSyncs)
+	// We pass syncPeriod to ipt.Monitor, which will call us only if it needs to.
+	// We need to pass *some* maxInterval to NewBoundedFrequencyRunner anyway though.
+	// time.Hour is arbitrary.
+	proxier.syncRunner = async.NewBoundedFrequencyRunner("sync-runner", proxier.syncProxyRules, minSyncPeriod, time.Hour, burstSyncs)
+	go ipt.Monitor(utiliptables.Chain("KUBE-PROXY-CANARY"),
+		[]utiliptables.Table{utiliptables.TableMangle, utiliptables.TableNAT, utiliptables.TableFilter},
+		proxier.syncProxyRules, syncPeriod, wait.NeverStop)
 	return proxier, nil
 }
 
@@ -432,7 +438,7 @@ func CleanupLeftovers(ipt utiliptables.Interface) (encounteredError bool) {
 }
 
 func computeProbability(n int) string {
-	return fmt.Sprintf("%0.5f", 1.0/float64(n))
+	return fmt.Sprintf("%0.10f", 1.0/float64(n))
 }
 
 // This assumes proxier.mu is held

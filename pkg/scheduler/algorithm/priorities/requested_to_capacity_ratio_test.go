@@ -24,7 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
+	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
@@ -56,17 +56,17 @@ func TestCreatingFunctionShapeErrorsIfXIsNotSorted(t *testing.T) {
 
 func TestCreatingFunctionPointNotInAllowedRange(t *testing.T) {
 	var err error
-	_, err = NewFunctionShape([]FunctionShapePoint{{-1, 0}, {100, 10}})
+	_, err = NewFunctionShape([]FunctionShapePoint{{-1, 0}, {100, 100}})
 	assert.Equal(t, "utilization values must not be less than 0. Utilization[0]==-1", err.Error())
 
-	_, err = NewFunctionShape([]FunctionShapePoint{{0, 0}, {101, 10}})
+	_, err = NewFunctionShape([]FunctionShapePoint{{0, 0}, {101, 100}})
 	assert.Equal(t, "utilization values must not be greater than 100. Utilization[1]==101", err.Error())
 
-	_, err = NewFunctionShape([]FunctionShapePoint{{0, -1}, {100, 10}})
+	_, err = NewFunctionShape([]FunctionShapePoint{{0, -1}, {100, 100}})
 	assert.Equal(t, "score values must not be less than 0. Score[0]==-1", err.Error())
 
-	_, err = NewFunctionShape([]FunctionShapePoint{{0, 0}, {100, 11}})
-	assert.Equal(t, "score valuses not be greater than 10. Score[1]==11", err.Error())
+	_, err = NewFunctionShape([]FunctionShapePoint{{0, 0}, {100, 101}})
+	assert.Equal(t, "score valuses not be greater than 100. Score[1]==101", err.Error())
 }
 
 func TestBrokenLinearFunction(t *testing.T) {
@@ -150,7 +150,7 @@ func TestRequestedToCapacityRatio(t *testing.T) {
 		test               string
 		requested          resources
 		nodes              map[string]nodeResources
-		expectedPriorities schedulerapi.HostPriorityList
+		expectedPriorities framework.NodeScoreList
 	}
 
 	tests := []test{
@@ -167,7 +167,7 @@ func TestRequestedToCapacityRatio(t *testing.T) {
 					used:     resources{0, 0},
 				},
 			},
-			expectedPriorities: []schedulerapi.HostPriority{{Host: "node1", Score: 10}, {Host: "node2", Score: 10}},
+			expectedPriorities: []framework.NodeScore{{Name: "node1", Score: 100}, {Name: "node2", Score: 100}},
 		},
 		{
 			test:      "nothing scheduled, resources requested, differently sized machines (default - least requested nodes have priority)",
@@ -182,7 +182,7 @@ func TestRequestedToCapacityRatio(t *testing.T) {
 					used:     resources{0, 0},
 				},
 			},
-			expectedPriorities: []schedulerapi.HostPriority{{Host: "node1", Score: 4}, {Host: "node2", Score: 5}},
+			expectedPriorities: []framework.NodeScore{{Name: "node1", Score: 38}, {Name: "node2", Score: 50}},
 		},
 		{
 			test:      "no resources requested, pods scheduled with resources (default - least requested nodes have priority)",
@@ -197,7 +197,7 @@ func TestRequestedToCapacityRatio(t *testing.T) {
 					used:     resources{3000, 5000},
 				},
 			},
-			expectedPriorities: []schedulerapi.HostPriority{{Host: "node1", Score: 4}, {Host: "node2", Score: 5}},
+			expectedPriorities: []framework.NodeScore{{Name: "node1", Score: 38}, {Name: "node2", Score: 50}},
 		},
 	}
 
@@ -291,7 +291,7 @@ func TestResourceBinPackingSingleExtended(t *testing.T) {
 		pod          *v1.Pod
 		pods         []*v1.Pod
 		nodes        []*v1.Node
-		expectedList schedulerapi.HostPriorityList
+		expectedList framework.NodeScoreList
 		name         string
 	}{
 		{
@@ -310,7 +310,7 @@ func TestResourceBinPackingSingleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: noResources},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResource2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResource1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 0}, {Host: "machine2", Score: 0}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 0}, {Name: "machine2", Score: 0}},
 			name:         "nothing scheduled, nothing requested",
 		},
 
@@ -330,7 +330,7 @@ func TestResourceBinPackingSingleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: extendedResourcePod1},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResource2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResource1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 2}, {Host: "machine2", Score: 5}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 2}, {Name: "machine2", Score: 5}},
 			name:         "resources requested, pods scheduled with less resources",
 			pods: []*v1.Pod{
 				{Spec: noResources},
@@ -353,7 +353,7 @@ func TestResourceBinPackingSingleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: extendedResourcePod1},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResource2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResource1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 2}, {Host: "machine2", Score: 10}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 2}, {Name: "machine2", Score: 10}},
 			name:         "resources requested, pods scheduled with resources, on node with existing pod running ",
 			pods: []*v1.Pod{
 				{Spec: machine2Pod},
@@ -376,7 +376,7 @@ func TestResourceBinPackingSingleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: extendedResourcePod2},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResource2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResource1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 5}, {Host: "machine2", Score: 10}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 5}, {Name: "machine2", Score: 10}},
 			name:         "resources requested, pods scheduled with more resources",
 			pods: []*v1.Pod{
 				{Spec: noResources},
@@ -447,7 +447,7 @@ func TestResourceBinPackingMultipleExtended(t *testing.T) {
 		pod          *v1.Pod
 		pods         []*v1.Pod
 		nodes        []*v1.Node
-		expectedList schedulerapi.HostPriorityList
+		expectedList framework.NodeScoreList
 		name         string
 	}{
 		{
@@ -480,7 +480,7 @@ func TestResourceBinPackingMultipleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: noResources},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResources2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResources1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 0}, {Host: "machine2", Score: 0}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 0}, {Name: "machine2", Score: 0}},
 			name:         "nothing scheduled, nothing requested",
 		},
 
@@ -514,7 +514,7 @@ func TestResourceBinPackingMultipleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: extnededResourcePod1},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResources2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResources1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 4}, {Host: "machine2", Score: 3}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 4}, {Name: "machine2", Score: 3}},
 			name:         "resources requested, pods scheduled with less resources",
 			pods: []*v1.Pod{
 				{Spec: noResources},
@@ -550,7 +550,7 @@ func TestResourceBinPackingMultipleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: extnededResourcePod1},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResources2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResources1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 4}, {Host: "machine2", Score: 7}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 4}, {Name: "machine2", Score: 7}},
 			name:         "resources requested, pods scheduled with resources, on node with existing pod running ",
 			pods: []*v1.Pod{
 				{Spec: machine2Pod},
@@ -601,7 +601,7 @@ func TestResourceBinPackingMultipleExtended(t *testing.T) {
 
 			pod:          &v1.Pod{Spec: extnededResourcePod2},
 			nodes:        []*v1.Node{makeNodeWithExtendedResource("machine1", 4000, 10000*1024*1024, extendedResources2), makeNodeWithExtendedResource("machine2", 4000, 10000*1024*1024, extendedResources1)},
-			expectedList: []schedulerapi.HostPriority{{Host: "machine1", Score: 5}, {Host: "machine2", Score: 5}},
+			expectedList: []framework.NodeScore{{Name: "machine1", Score: 5}, {Name: "machine2", Score: 5}},
 			name:         "resources requested, pods scheduled with more resources",
 			pods: []*v1.Pod{
 				{Spec: noResources},

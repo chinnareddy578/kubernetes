@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -31,7 +31,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/kubernetes/pkg/util/metrics"
+	"k8s.io/component-base/metrics/prometheus/ratelimiter"
 
 	"k8s.io/klog"
 )
@@ -52,7 +52,7 @@ type PodGCController struct {
 
 func NewPodGC(kubeClient clientset.Interface, podInformer coreinformers.PodInformer, terminatedPodThreshold int) *PodGCController {
 	if kubeClient != nil && kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
-		metrics.RegisterMetricAndTrackRateLimiterUsage("gc_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter())
+		ratelimiter.RegisterMetricAndTrackRateLimiterUsage("gc_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter())
 	}
 	gcc := &PodGCController{
 		kubeClient:             kubeClient,
@@ -113,8 +113,6 @@ func (gcc *PodGCController) gcTerminated(pods []*v1.Pod) {
 	}
 
 	terminatedPodCount := len(terminatedPods)
-	sort.Sort(byCreationTimestamp(terminatedPods))
-
 	deleteCount := terminatedPodCount - gcc.terminatedPodThreshold
 
 	if deleteCount > terminatedPodCount {
@@ -122,8 +120,12 @@ func (gcc *PodGCController) gcTerminated(pods []*v1.Pod) {
 	}
 	if deleteCount > 0 {
 		klog.Infof("garbage collecting %v pods", deleteCount)
+	} else {
+		return
 	}
 
+	// sort only when necessary
+	sort.Sort(byCreationTimestamp(terminatedPods))
 	var wait sync.WaitGroup
 	for i := 0; i < deleteCount; i++ {
 		wait.Add(1)

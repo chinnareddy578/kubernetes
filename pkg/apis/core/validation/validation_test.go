@@ -5160,45 +5160,6 @@ func TestValidateDisabledSubpathExpr(t *testing.T) {
 		}
 	}
 
-	// Repeat with feature gate off
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.VolumeSubpathEnvExpansion, false)()
-	cases = map[string]struct {
-		mounts      []core.VolumeMount
-		expectError bool
-	}{
-		"subpath expr not specified": {
-			[]core.VolumeMount{
-				{
-					Name:      "abc-123",
-					MountPath: "/bab",
-				},
-			},
-			false,
-		},
-		"subpath expr specified": {
-			[]core.VolumeMount{
-				{
-					Name:        "abc-123",
-					MountPath:   "/bab",
-					SubPathExpr: "$(POD_NAME)",
-				},
-			},
-			false, // validation should not fail, dropping the field is handled in PrepareForCreate/PrepareForUpdate
-		},
-	}
-
-	for name, test := range cases {
-		errs := ValidateVolumeMounts(test.mounts, GetVolumeDeviceMap(goodVolumeDevices), vols, &container, field.NewPath("field"))
-
-		if len(errs) != 0 && !test.expectError {
-			t.Errorf("test %v failed: %+v", name, errs)
-		}
-
-		if len(errs) == 0 && test.expectError {
-			t.Errorf("test %v failed, expected error", name)
-		}
-	}
-
 	// Repeat with subpath feature gate off
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.VolumeSubpath, false)()
 	cases = map[string]struct {
@@ -13099,9 +13060,9 @@ func TestValidateDockerConfigSecret(t *testing.T) {
 	validDockerSecret2 := func() core.Secret {
 		return core.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "bar"},
-			Type:       core.SecretTypeDockerConfigJson,
+			Type:       core.SecretTypeDockerConfigJSON,
 			Data: map[string][]byte{
-				core.DockerConfigJsonKey: []byte(`{"auths":{"https://index.docker.io/v1/": {"auth": "Y2x1ZWRyb29sZXIwMDAxOnBhc3N3b3Jk","email": "fake@example.com"}}}`),
+				core.DockerConfigJSONKey: []byte(`{"auths":{"https://index.docker.io/v1/": {"auth": "Y2x1ZWRyb29sZXIwMDAxOnBhc3N3b3Jk","email": "fake@example.com"}}}`),
 			},
 		}
 	}
@@ -13118,9 +13079,9 @@ func TestValidateDockerConfigSecret(t *testing.T) {
 	delete(missingDockerConfigKey.Data, core.DockerConfigKey)
 	emptyDockerConfigKey.Data[core.DockerConfigKey] = []byte("")
 	invalidDockerConfigKey.Data[core.DockerConfigKey] = []byte("bad")
-	delete(missingDockerConfigKey2.Data, core.DockerConfigJsonKey)
-	emptyDockerConfigKey2.Data[core.DockerConfigJsonKey] = []byte("")
-	invalidDockerConfigKey2.Data[core.DockerConfigJsonKey] = []byte("bad")
+	delete(missingDockerConfigKey2.Data, core.DockerConfigJSONKey)
+	emptyDockerConfigKey2.Data[core.DockerConfigJSONKey] = []byte("")
+	invalidDockerConfigKey2.Data[core.DockerConfigJSONKey] = []byte("bad")
 
 	tests := map[string]struct {
 		secret core.Secret

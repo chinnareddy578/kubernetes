@@ -58,7 +58,7 @@ const (
 
 // DefaultKubeProxyConfiguration assigns default values for the kube-proxy ComponentConfig
 func DefaultKubeProxyConfiguration(internalcfg *kubeadmapi.ClusterConfiguration) {
-	externalproxycfg := &kubeproxyconfigv1alpha1.KubeProxyConfiguration{}
+	externalproxycfg := &kubeproxyconfigv1alpha1.KubeProxyConfiguration{FeatureGates: make(map[string]bool)}
 	kind := "KubeProxyConfiguration"
 
 	// Do a roundtrip to the external version for defaulting
@@ -113,7 +113,7 @@ func DefaultKubeletConfiguration(internalcfg *kubeadmapi.ClusterConfiguration) {
 	}
 
 	clusterDNS := ""
-	dnsIP, err := constants.GetDNSIP(internalcfg.Networking.ServiceSubnet)
+	dnsIP, err := constants.GetDNSIP(internalcfg.Networking.ServiceSubnet, features.Enabled(internalcfg.FeatureGates, features.IPv6DualStack))
 	if err != nil {
 		clusterDNS = kubeadmapiv1beta2.DefaultClusterDNSIP
 	} else {

@@ -88,9 +88,9 @@ func TestCommonDetachDisk(t *testing.T) {
 		expectedErr bool
 	}{
 		{
-			desc:        "an error shall be returned if there's no such instance corresponding to given nodeName",
+			desc:        "error should not be returned if there's no such instance corresponding to given nodeName",
 			nodeName:    "vm1",
-			expectedErr: true,
+			expectedErr: false,
 		},
 		{
 			desc:        "no error shall be returned if there's no matching disk according to given diskName",
@@ -179,7 +179,7 @@ func TestGetNextDiskLun(t *testing.T) {
 			expectedErr:     false,
 		},
 		{
-			desc:            "LUN -1 and and error shall be returned if there's no available LUN",
+			desc:            "LUN -1 and  error shall be returned if there's no available LUN",
 			isDataDisksFull: true,
 			expectedLun:     -1,
 			expectedErr:     true,

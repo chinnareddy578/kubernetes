@@ -88,6 +88,16 @@ type KubeSchedulerConfiguration struct {
 	// If this value is nil, the default value will be used.
 	BindTimeoutSeconds *int64
 
+	// PodInitialBackoffSeconds is the initial backoff for unschedulable pods.
+	// If specified, it must be greater than 0. If this value is null, the default value (1s)
+	// will be used.
+	PodInitialBackoffSeconds *int64
+
+	// PodMaxBackoffSeconds is the max backoff for unschedulable pods.
+	// If specified, it must be greater than podInitialBackoffSeconds. If this value is null,
+	// the default value (10s) will be used.
+	PodMaxBackoffSeconds *int64
+
 	// Plugins specify the set of plugins that should be enabled or disabled. Enabled plugins are the
 	// ones that should be enabled in addition to the default plugins. Disabled plugins are any of the
 	// default plugins that should be disabled.
@@ -208,4 +218,38 @@ type PluginConfig struct {
 	Name string
 	// Args defines the arguments passed to the plugins at the time of initialization. Args can have arbitrary structure.
 	Args runtime.Unknown
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// NOTE: The following methods are intentionally left out of the staging mirror.
+///////////////////////////////////////////////////////////////////////////////
+
+func appendPluginSet(dst *PluginSet, src *PluginSet) *PluginSet {
+	if dst == nil {
+		dst = &PluginSet{}
+	}
+	if src != nil {
+		dst.Enabled = append(dst.Enabled, src.Enabled...)
+		dst.Disabled = append(dst.Disabled, src.Disabled...)
+	}
+	return dst
+}
+
+// Append appends src Plugins to current Plugins. If a PluginSet is nil, it will
+// be created.
+func (p *Plugins) Append(src *Plugins) {
+	if p == nil || src == nil {
+		return
+	}
+	p.QueueSort = appendPluginSet(p.QueueSort, src.QueueSort)
+	p.PreFilter = appendPluginSet(p.PreFilter, src.PreFilter)
+	p.Filter = appendPluginSet(p.Filter, src.Filter)
+	p.PostFilter = appendPluginSet(p.PostFilter, src.PostFilter)
+	p.Score = appendPluginSet(p.Score, src.Score)
+	p.Reserve = appendPluginSet(p.Reserve, src.Reserve)
+	p.Permit = appendPluginSet(p.Permit, src.Permit)
+	p.PreBind = appendPluginSet(p.PreBind, src.PreBind)
+	p.Bind = appendPluginSet(p.Bind, src.Bind)
+	p.PostBind = appendPluginSet(p.PostBind, src.PostBind)
+	p.Unreserve = appendPluginSet(p.Unreserve, src.Unreserve)
 }

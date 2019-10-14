@@ -39,6 +39,7 @@ import (
 	netutil "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/sets"
 	versionutil "k8s.io/apimachinery/pkg/util/version"
+	kubeadmversion "k8s.io/component-base/version"
 	"k8s.io/klog"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
@@ -46,7 +47,6 @@ import (
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/initsystem"
 	utilruntime "k8s.io/kubernetes/cmd/kubeadm/app/util/runtime"
 	"k8s.io/kubernetes/cmd/kubeadm/app/util/system"
-	kubeadmversion "k8s.io/kubernetes/cmd/kubeadm/app/version"
 	"k8s.io/kubernetes/pkg/registry/core/service/ipallocator"
 	utilsexec "k8s.io/utils/exec"
 	utilsnet "k8s.io/utils/net"
@@ -546,10 +546,10 @@ func (sysver SystemVerificationCheck) Check() (warnings, errorList []error) {
 	for _, v := range validators {
 		warn, err := v.Validate(system.DefaultSysSpec)
 		if err != nil {
-			errs = append(errs, err)
+			errs = append(errs, err...)
 		}
 		if warn != nil {
-			warns = append(warns, warn)
+			warns = append(warns, warn...)
 		}
 	}
 
@@ -894,10 +894,12 @@ func RunInitNodeChecks(execer utilsexec.Interface, cfg *kubeadmapi.InitConfigura
 		FileAvailableCheck{Path: kubeadmconstants.GetStaticPodFilepath(kubeadmconstants.KubeScheduler, manifestsDir)},
 		FileAvailableCheck{Path: kubeadmconstants.GetStaticPodFilepath(kubeadmconstants.Etcd, manifestsDir)},
 		HTTPProxyCheck{Proto: "https", Host: cfg.LocalAPIEndpoint.AdvertiseAddress},
-		HTTPProxyCIDRCheck{Proto: "https", CIDR: cfg.Networking.ServiceSubnet},
 	}
-
-	cidrs := strings.Split(cfg.Networking.PodSubnet, ",")
+	cidrs := strings.Split(cfg.Networking.ServiceSubnet, ",")
+	for _, cidr := range cidrs {
+		checks = append(checks, HTTPProxyCIDRCheck{Proto: "https", CIDR: cidr})
+	}
+	cidrs = strings.Split(cfg.Networking.PodSubnet, ",")
 	for _, cidr := range cidrs {
 		checks = append(checks, HTTPProxyCIDRCheck{Proto: "https", CIDR: cidr})
 	}

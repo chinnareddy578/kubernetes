@@ -26,7 +26,6 @@ import (
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
-	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 
@@ -38,9 +37,12 @@ const (
 	defaultObservationTimeout = time.Minute * 4
 )
 
-var _ = framework.KubeDescribe("StartupProbe [Serial] [Disruptive] [NodeFeature:StartupProbe]", func() {
-	f := framework.NewDefaultFramework("critical-pod-test")
+var _ = framework.KubeDescribe("StartupProbe [Serial] [Disruptive] [NodeAlphaFeature:StartupProbe]", func() {
+	f := framework.NewDefaultFramework("startup-probe-test")
 	var podClient *framework.PodClient
+	ginkgo.BeforeEach(func() {
+		podClient = f.PodClient()
+	})
 
 	/*
 		These tests are located here as they require tempSetCurrentKubeletConfig to enable the feature gate for startupProbe.
@@ -182,9 +184,9 @@ var _ = framework.KubeDescribe("StartupProbe [Serial] [Disruptive] [NodeFeature:
 			startedTime, err := common.GetContainerStartedTime(p, "busybox")
 			framework.ExpectNoError(err)
 
-			e2elog.Logf("Container started at %v, pod became ready at %v", startedTime, readyTime)
+			framework.Logf("Container started at %v, pod became ready at %v", startedTime, readyTime)
 			if readyTime.Sub(startedTime) < 40*time.Second {
-				e2elog.Failf("Pod became ready before startupProbe succeeded")
+				framework.Failf("Pod became ready before startupProbe succeeded")
 			}
 		})
 	})

@@ -60,6 +60,7 @@ import (
 	"k8s.io/component-base/cli/globalflag"
 	_ "k8s.io/component-base/metrics/prometheus/workqueue" // for workqueue metric registration
 	"k8s.io/component-base/version"
+	"k8s.io/component-base/version/verflag"
 	"k8s.io/klog"
 	aggregatorapiserver "k8s.io/kube-aggregator/pkg/apiserver"
 	aggregatorscheme "k8s.io/kube-aggregator/pkg/apiserver/scheme"
@@ -82,7 +83,6 @@ import (
 	rbacrest "k8s.io/kubernetes/pkg/registry/rbac/rest"
 	"k8s.io/kubernetes/pkg/serviceaccount"
 	utilflag "k8s.io/kubernetes/pkg/util/flag"
-	"k8s.io/kubernetes/pkg/version/verflag"
 	"k8s.io/kubernetes/plugin/pkg/auth/authenticator/token/bootstrap"
 )
 
@@ -168,7 +168,7 @@ func CreateServerChain(completedOptions completedServerRunOptions, stopCh <-chan
 		return nil, err
 	}
 
-	kubeAPIServerConfig, insecureServingInfo, serviceResolver, pluginInitializer, admissionPostStartHook, err := CreateKubeAPIServerConfig(completedOptions, nodeTunneler, proxyTransport)
+	kubeAPIServerConfig, insecureServingInfo, serviceResolver, pluginInitializer, err := CreateKubeAPIServerConfig(completedOptions, nodeTunneler, proxyTransport)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func CreateServerChain(completedOptions completedServerRunOptions, stopCh <-chan
 		return nil, err
 	}
 
-	kubeAPIServer, err := CreateKubeAPIServer(kubeAPIServerConfig, apiExtensionsServer.GenericAPIServer, admissionPostStartHook)
+	kubeAPIServer, err := CreateKubeAPIServer(kubeAPIServerConfig, apiExtensionsServer.GenericAPIServer)
 	if err != nil {
 		return nil, err
 	}
@@ -211,13 +211,11 @@ func CreateServerChain(completedOptions completedServerRunOptions, stopCh <-chan
 }
 
 // CreateKubeAPIServer creates and wires a workable kube-apiserver
-func CreateKubeAPIServer(kubeAPIServerConfig *master.Config, delegateAPIServer genericapiserver.DelegationTarget, admissionPostStartHook genericapiserver.PostStartHookFunc) (*master.Master, error) {
+func CreateKubeAPIServer(kubeAPIServerConfig *master.Config, delegateAPIServer genericapiserver.DelegationTarget) (*master.Master, error) {
 	kubeAPIServer, err := kubeAPIServerConfig.Complete().New(delegateAPIServer)
 	if err != nil {
 		return nil, err
 	}
-
-	kubeAPIServer.GenericAPIServer.AddPostStartHookOrDie("start-kube-apiserver-admission-initializer", admissionPostStartHook)
 
 	return kubeAPIServer, nil
 }
@@ -273,25 +271,20 @@ func CreateKubeAPIServerConfig(
 	nodeTunneler tunneler.Tunneler,
 	proxyTransport *http.Transport,
 ) (
-	config *master.Config,
-	insecureServingInfo *genericapiserver.DeprecatedInsecureServingInfo,
-	serviceResolver aggregatorapiserver.ServiceResolver,
-	pluginInitializers []admission.PluginInitializer,
-	admissionPostStartHook genericapiserver.PostStartHookFunc,
-	lastErr error,
+	*master.Config,
+	*genericapiserver.DeprecatedInsecureServingInfo,
+	aggregatorapiserver.ServiceResolver,
+	[]admission.PluginInitializer,
+	error,
 ) {
-	var genericConfig *genericapiserver.Config
-	var storageFactory *serverstorage.DefaultStorageFactory
-	var versionedInformers clientgoinformers.SharedInformerFactory
-	genericConfig, versionedInformers, insecureServingInfo, serviceResolver, pluginInitializers, admissionPostStartHook, storageFactory, lastErr = buildGenericConfig(s.ServerRunOptions, proxyTransport)
-	if lastErr != nil {
-		return
+	genericConfig, versionedInformers, insecureServingInfo, serviceResolver, pluginInitializers, admissionPostStartHook, storageFactory, err := buildGenericConfig(s.ServerRunOptions, proxyTransport)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 
 	if _, port, err := net.SplitHostPort(s.Etcd.StorageConfig.Transport.ServerList[0]); err == nil && port != "0" && len(port) != 0 {
 		if err := utilwait.PollImmediate(etcdRetryInterval, etcdRetryLimit*etcdRetryInterval, preflight.EtcdConnection{ServerList: s.Etcd.StorageConfig.Transport.ServerList}.CheckEtcdServers); err != nil {
-			lastErr = fmt.Errorf("error waiting for etcd connection: %v", err)
-			return
+			return nil, nil, nil, nil, fmt.Errorf("error waiting for etcd connection: %v", err)
 		}
 	}
 
@@ -306,31 +299,31 @@ func CreateKubeAPIServerConfig(
 		PerConnectionBandwidthLimitBytesPerSec: s.MaxConnectionBytesPerSec,
 	})
 
-	serviceIPRange, apiServerServiceIP, lastErr := master.DefaultServiceIPRange(s.PrimaryServiceClusterIPRange)
-	if lastErr != nil {
-		return
+	serviceIPRange, apiServerServiceIP, err := master.ServiceIPRange(s.PrimaryServiceClusterIPRange)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 
 	// defaults to empty range and ip
 	var secondaryServiceIPRange net.IPNet
 	// process secondary range only if provided by user
 	if s.SecondaryServiceClusterIPRange.IP != nil {
-		secondaryServiceIPRange, _, lastErr = master.DefaultServiceIPRange(s.SecondaryServiceClusterIPRange)
-		if lastErr != nil {
-			return
+		secondaryServiceIPRange, _, err = master.ServiceIPRange(s.SecondaryServiceClusterIPRange)
+		if err != nil {
+			return nil, nil, nil, nil, err
 		}
 	}
 
-	clientCA, lastErr := readCAorNil(s.Authentication.ClientCert.ClientCA)
-	if lastErr != nil {
-		return
+	clientCA, err := readCAorNil(s.Authentication.ClientCert.ClientCA)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
-	requestHeaderProxyCA, lastErr := readCAorNil(s.Authentication.RequestHeader.ClientCAFile)
-	if lastErr != nil {
-		return
+	requestHeaderProxyCA, err := readCAorNil(s.Authentication.RequestHeader.ClientCAFile)
+	if err != nil {
+		return nil, nil, nil, nil, err
 	}
 
-	config = &master.Config{
+	config := &master.Config{
 		GenericConfig: genericConfig,
 		ExtraConfig: master.ExtraConfig{
 			ClientCARegistrationHook: master.ClientCARegistrationHook{
@@ -369,6 +362,9 @@ func CreateKubeAPIServerConfig(
 			VersionedInformers: versionedInformers,
 		},
 	}
+	if err := config.GenericConfig.AddPostStartHook("start-kube-apiserver-admission-initializer", admissionPostStartHook); err != nil {
+		return nil, nil, nil, nil, err
+	}
 
 	if nodeTunneler != nil {
 		// Use the nodeTunneler's dialer to connect to the kubelet
@@ -379,7 +375,7 @@ func CreateKubeAPIServerConfig(
 		config.ExtraConfig.KubeletClientConfig.Lookup = config.GenericConfig.EgressSelector.Lookup
 	}
 
-	return
+	return config, insecureServingInfo, serviceResolver, pluginInitializers, nil
 }
 
 // BuildGenericConfig takes the master server options and produces the genericapiserver.Config associated with it
@@ -525,7 +521,10 @@ func buildGenericConfig(
 
 // BuildAuthenticator constructs the authenticator
 func BuildAuthenticator(s *options.ServerRunOptions, extclient clientgoclientset.Interface, versionedInformer clientgoinformers.SharedInformerFactory) (authenticator.Request, *spec.SecurityDefinitions, error) {
-	authenticatorConfig := s.Authentication.ToAuthenticationConfig()
+	authenticatorConfig, err := s.Authentication.ToAuthenticationConfig()
+	if err != nil {
+		return nil, nil, err
+	}
 	if s.Authentication.ServiceAccounts.Lookup || utilfeature.DefaultFeatureGate.Enabled(features.TokenRequest) {
 		authenticatorConfig.ServiceAccountTokenGetter = serviceaccountcontroller.NewGetterFromClient(
 			extclient,
@@ -575,7 +574,7 @@ func Complete(s *options.ServerRunOptions) (completedServerRunOptions, error) {
 	// nothing provided by user, use default range (only applies to the Primary)
 	if len(serviceClusterIPRangeList) == 0 {
 		var primaryServiceClusterCIDR net.IPNet
-		serviceIPRange, apiServerServiceIP, err = master.DefaultServiceIPRange(primaryServiceClusterCIDR)
+		serviceIPRange, apiServerServiceIP, err = master.ServiceIPRange(primaryServiceClusterCIDR)
 		if err != nil {
 			return options, fmt.Errorf("error determining service IP ranges: %v", err)
 		}
@@ -588,7 +587,7 @@ func Complete(s *options.ServerRunOptions) (completedServerRunOptions, error) {
 			return options, fmt.Errorf("service-cluster-ip-range[0] is not a valid cidr")
 		}
 
-		serviceIPRange, apiServerServiceIP, err = master.DefaultServiceIPRange(*(primaryServiceClusterCIDR))
+		serviceIPRange, apiServerServiceIP, err = master.ServiceIPRange(*(primaryServiceClusterCIDR))
 		if err != nil {
 			return options, fmt.Errorf("error determining service IP ranges for primary service cidr: %v", err)
 		}
@@ -628,7 +627,7 @@ func Complete(s *options.ServerRunOptions) (completedServerRunOptions, error) {
 	// Use (ServiceAccountSigningKeyFile != "") as a proxy to the user enabling
 	// TokenRequest functionality. This defaulting was convenient, but messed up
 	// a lot of people when they rotated their serving cert with no idea it was
-	// connected to their service account keys. We are taking this oppurtunity to
+	// connected to their service account keys. We are taking this opportunity to
 	// remove this problematic defaulting.
 	if s.ServiceAccountSigningKeyFile == "" {
 		// Default to the private server key for service account token signing

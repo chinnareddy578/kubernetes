@@ -641,14 +641,14 @@ func (oe *operationExecutor) VerifyVolumesAreAttached(
 			}
 
 			// Migration: Must also check the Node since Attach would have been done with in-tree if node is not using Migration
-			nu, err := nodeUsingCSIPlugin(oe.operationGenerator, volumeAttached.VolumeSpec, node)
+			nu, err := nodeUsingCSIPlugin(oe.operationGenerator.GetCSITranslator(), oe.operationGenerator.GetVolumePluginMgr(), volumeAttached.VolumeSpec, node)
 			if err != nil {
 				klog.Errorf(volumeAttached.GenerateErrorDetailed("VolumesAreAttached.NodeUsingCSIPlugin failed", err).Error())
 				continue
 			}
 
 			var volumePlugin volume.VolumePlugin
-			if useCSIPlugin(oe.operationGenerator.GetVolumePluginMgr(), volumeAttached.VolumeSpec) && nu {
+			if useCSIPlugin(oe.operationGenerator.GetCSITranslator(), oe.operationGenerator.GetVolumePluginMgr(), volumeAttached.VolumeSpec) && nu {
 				// The volume represented by this spec is CSI and thus should be migrated
 				volumePlugin, err = oe.operationGenerator.GetVolumePluginMgr().FindPluginByName(csi.CSIPluginName)
 				if err != nil || volumePlugin == nil {
@@ -661,7 +661,7 @@ func (oe *operationExecutor) VerifyVolumesAreAttached(
 					continue
 				}
 
-				csiSpec, err := translateSpec(volumeAttached.VolumeSpec)
+				csiSpec, err := translateSpec(oe.operationGenerator.GetCSITranslator(), volumeAttached.VolumeSpec)
 				if err != nil {
 					klog.Errorf(volumeAttached.GenerateErrorDetailed("VolumesAreAttached.TranslateSpec failed", err).Error())
 					continue
@@ -711,9 +711,8 @@ func (oe *operationExecutor) VerifyVolumesAreAttached(
 			// If node doesn't support Bulk volume polling it is best to poll individually
 			nodeError := oe.VerifyVolumesAreAttachedPerNode(nodeAttachedVolumes, node, actualStateOfWorld)
 			if nodeError != nil {
-				klog.Errorf("BulkVerifyVolumes.VerifyVolumesAreAttached verifying volumes on node %q with %v", node, nodeError)
+				klog.Errorf("VerifyVolumesAreAttached failed for volumes %v, node %q with error %v", nodeAttachedVolumes, node, nodeError)
 			}
-			break
 		}
 	}
 

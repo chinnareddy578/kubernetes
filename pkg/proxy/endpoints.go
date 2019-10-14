@@ -315,6 +315,7 @@ func (ect *EndpointChangeTracker) endpointsToEndpointsMap(endpoints *v1.Endpoint
 			svcPortName := ServicePortName{
 				NamespacedName: types.NamespacedName{Namespace: endpoints.Namespace, Name: endpoints.Name},
 				Port:           port.Name,
+				Protocol:       port.Protocol,
 			}
 			for i := range ss.Addresses {
 				addr := &ss.Addresses[i]
@@ -327,7 +328,7 @@ func (ect *EndpointChangeTracker) endpointsToEndpointsMap(endpoints *v1.Endpoint
 				if ect.isIPv6Mode != nil && utilnet.IsIPv6String(addr.IP) != *ect.isIPv6Mode {
 					// Emit event on the corresponding service which had a different
 					// IP version than the endpoint.
-					utilproxy.LogAndEmitIncorrectIPVersionEvent(ect.recorder, "endpoints", addr.IP, endpoints.Name, endpoints.Namespace, "")
+					utilproxy.LogAndEmitIncorrectIPVersionEvent(ect.recorder, "endpoints", addr.IP, endpoints.Namespace, endpoints.Name, "")
 					continue
 				}
 				isLocal := addr.NodeName != nil && *addr.NodeName == ect.hostname
@@ -410,6 +411,10 @@ func (em EndpointsMap) getLocalEndpointIPs() map[types.NamespacedName]sets.Strin
 // is used to store stale udp service in order to clear udp conntrack later.
 func detectStaleConnections(oldEndpointsMap, newEndpointsMap EndpointsMap, staleEndpoints *[]ServiceEndpoint, staleServiceNames *[]ServicePortName) {
 	for svcPortName, epList := range oldEndpointsMap {
+		if svcPortName.Protocol != v1.ProtocolUDP {
+			continue
+		}
+
 		for _, ep := range epList {
 			stale := true
 			for i := range newEndpointsMap[svcPortName] {
@@ -426,6 +431,10 @@ func detectStaleConnections(oldEndpointsMap, newEndpointsMap EndpointsMap, stale
 	}
 
 	for svcPortName, epList := range newEndpointsMap {
+		if svcPortName.Protocol != v1.ProtocolUDP {
+			continue
+		}
+
 		// For udp service, if its backend changes from 0 to non-0. There may exist a conntrack entry that could blackhole traffic to the service.
 		if len(epList) > 0 && len(oldEndpointsMap[svcPortName]) == 0 {
 			*staleServiceNames = append(*staleServiceNames, svcPortName)

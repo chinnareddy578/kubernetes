@@ -29,7 +29,6 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2edeploy "k8s.io/kubernetes/test/e2e/framework/deployment"
-	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
@@ -48,7 +47,8 @@ var _ = SIGDescribe("[Feature:IPv6DualStackAlphaFeature] [LinuxOnly]", func() {
 
 	ginkgo.It("should have ipv4 and ipv6 internal node ip", func() {
 		// TODO (aramase) can switch to new function to get all nodes
-		nodeList := framework.GetReadySchedulableNodesOrDie(cs)
+		nodeList, err := e2enode.GetReadySchedulableNodes(cs)
+		framework.ExpectNoError(err)
 
 		for _, node := range nodeList.Items {
 			// get all internal ips for node
@@ -62,7 +62,8 @@ var _ = SIGDescribe("[Feature:IPv6DualStackAlphaFeature] [LinuxOnly]", func() {
 
 	ginkgo.It("should have ipv4 and ipv6 node podCIDRs", func() {
 		// TODO (aramase) can switch to new function to get all nodes
-		nodeList := framework.GetReadySchedulableNodesOrDie(cs)
+		nodeList, err := e2enode.GetReadySchedulableNodes(cs)
+		framework.ExpectNoError(err)
 
 		for _, node := range nodeList.Items {
 			framework.ExpectEqual(len(node.Spec.PodCIDRs), 2)
@@ -122,12 +123,10 @@ var _ = SIGDescribe("[Feature:IPv6DualStackAlphaFeature] [LinuxOnly]", func() {
 
 		// get all schedulable nodes to determine the number of replicas for pods
 		// this is to ensure connectivity from all nodes on cluster
-		nodeList := framework.GetReadySchedulableNodesOrDie(cs)
-		gomega.Expect(nodeList).NotTo(gomega.BeNil())
-
-		if len(nodeList.Items) < 1 {
-			e2elog.Failf("Expect at least 1 node, got %v", len(nodeList.Items))
-		}
+		// FIXME: tests may be run in large clusters. This test is O(n^2) in the
+		// number of nodes used. It should use GetBoundedReadySchedulableNodes().
+		nodeList, err := e2enode.GetReadySchedulableNodes(cs)
+		framework.ExpectNoError(err)
 
 		replicas := int32(len(nodeList.Items))
 
@@ -216,10 +215,10 @@ func assertNetworkConnectivity(f *framework.Framework, serverPods v1.PodList, cl
 	var serverIPs []string
 	for _, pod := range serverPods.Items {
 		if pod.Status.PodIPs == nil || len(pod.Status.PodIPs) != 2 {
-			e2elog.Failf("PodIPs list not expected value, got %v", pod.Status.PodIPs)
+			framework.Failf("PodIPs list not expected value, got %v", pod.Status.PodIPs)
 		}
 		if isIPv4(pod.Status.PodIPs[0].IP) == isIPv4(pod.Status.PodIPs[1].IP) {
-			e2elog.Failf("PodIPs should belong to different families, got %v", pod.Status.PodIPs)
+			framework.Failf("PodIPs should belong to different families, got %v", pod.Status.PodIPs)
 		}
 		serverIPs = append(serverIPs, pod.Status.PodIPs[0].IP, pod.Status.PodIPs[1].IP)
 	}

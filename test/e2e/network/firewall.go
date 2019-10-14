@@ -26,14 +26,12 @@ import (
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/kubernetes/pkg/master/ports"
 	"k8s.io/kubernetes/test/e2e/framework"
-	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	"k8s.io/kubernetes/test/e2e/framework/providers/gce"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 	gcecloud "k8s.io/legacy-cloud-providers/gce"
 
 	"github.com/onsi/ginkgo"
-	"github.com/onsi/gomega"
 )
 
 const (
@@ -71,14 +69,15 @@ var _ = SIGDescribe("Firewall rule", func() {
 		ginkgo.By("Getting cluster ID")
 		clusterID, err := gce.GetClusterID(cs)
 		framework.ExpectNoError(err)
-		e2elog.Logf("Got cluster ID: %v", clusterID)
+		framework.Logf("Got cluster ID: %v", clusterID)
 
 		jig := e2eservice.NewTestJig(cs, serviceName)
-		nodeList := jig.GetNodes(e2eservice.MaxNodesForEndpointsTests)
-		gomega.Expect(nodeList).NotTo(gomega.BeNil())
-		nodesNames := jig.GetNodesNames(e2eservice.MaxNodesForEndpointsTests)
-		if len(nodesNames) <= 0 {
-			e2elog.Failf("Expect at least 1 node, got: %v", nodesNames)
+		nodeList, err := e2enode.GetBoundedReadySchedulableNodes(cs, e2eservice.MaxNodesForEndpointsTests)
+		framework.ExpectNoError(err)
+
+		nodesNames := []string{}
+		for _, node := range nodeList.Items {
+			nodesNames = append(nodesNames, node.Name)
 		}
 		nodesSet := sets.NewString(nodesNames...)
 
@@ -136,7 +135,7 @@ var _ = SIGDescribe("Firewall rule", func() {
 		for i, nodeName := range nodesNames {
 			podName := fmt.Sprintf("netexec%v", i)
 
-			e2elog.Logf("Creating netexec pod %q on node %v in namespace %q", podName, nodeName, ns)
+			framework.Logf("Creating netexec pod %q on node %v in namespace %q", podName, nodeName, ns)
 			pod := f.NewAgnhostPod(podName,
 				"netexec",
 				fmt.Sprintf("--http-port=%d", firewallTestHTTPPort),
@@ -146,11 +145,11 @@ var _ = SIGDescribe("Firewall rule", func() {
 			pod.Spec.HostNetwork = true
 			_, err := cs.CoreV1().Pods(ns).Create(pod)
 			framework.ExpectNoError(err)
-			framework.ExpectNoError(f.WaitForPodRunning(podName))
-			e2elog.Logf("Netexec pod %q in namespace %q running", podName, ns)
+			framework.ExpectNoError(f.WaitForPodReady(podName))
+			framework.Logf("Netexec pod %q in namespace %q running", podName, ns)
 
 			defer func() {
-				e2elog.Logf("Cleaning up the netexec pod: %v", podName)
+				framework.Logf("Cleaning up the netexec pod: %v", podName)
 				err = cs.CoreV1().Pods(ns).Delete(podName, nil)
 				framework.ExpectNoError(err)
 			}()
@@ -189,10 +188,8 @@ var _ = SIGDescribe("Firewall rule", func() {
 	})
 
 	ginkgo.It("should have correct firewall rules for e2e cluster", func() {
-		nodes := framework.GetReadySchedulableNodesOrDie(cs)
-		if len(nodes.Items) <= 0 {
-			e2elog.Failf("Expect at least 1 node, got: %v", len(nodes.Items))
-		}
+		nodes, err := e2enode.GetReadySchedulableNodes(cs)
+		framework.ExpectNoError(err)
 
 		ginkgo.By("Checking if e2e firewall rules are correct")
 		for _, expFw := range gce.GetE2eFirewalls(cloudConfig.MasterName, cloudConfig.MasterTag, cloudConfig.NodeTag, cloudConfig.Network, cloudConfig.ClusterIPRange) {
@@ -205,7 +202,7 @@ var _ = SIGDescribe("Firewall rule", func() {
 		ginkgo.By("Checking well known ports on master and nodes are not exposed externally")
 		nodeAddrs := e2enode.FirstAddress(nodes, v1.NodeExternalIP)
 		if len(nodeAddrs) == 0 {
-			e2elog.Failf("did not find any node addresses")
+			framework.Failf("did not find any node addresses")
 		}
 
 		masterAddresses := framework.GetAllMasterAddresses(cs)
@@ -222,9 +219,9 @@ var _ = SIGDescribe("Firewall rule", func() {
 func assertNotReachableHTTPTimeout(ip string, port int, timeout time.Duration) {
 	result := framework.PokeHTTP(ip, port, "/", &framework.HTTPPokeParams{Timeout: timeout})
 	if result.Status == framework.HTTPError {
-		e2elog.Failf("Unexpected error checking for reachability of %s:%d: %v", ip, port, result.Error)
+		framework.Failf("Unexpected error checking for reachability of %s:%d: %v", ip, port, result.Error)
 	}
 	if result.Code != 0 {
-		e2elog.Failf("Was unexpectedly able to reach %s:%d", ip, port)
+		framework.Failf("Was unexpectedly able to reach %s:%d", ip, port)
 	}
 }

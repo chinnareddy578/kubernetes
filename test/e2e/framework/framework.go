@@ -47,6 +47,7 @@ import (
 	"k8s.io/client-go/restmapper"
 	scaleclient "k8s.io/client-go/scale"
 	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
+	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2epsp "k8s.io/kubernetes/test/e2e/framework/psp"
 	testutils "k8s.io/kubernetes/test/utils"
@@ -58,9 +59,7 @@ import (
 const (
 	maxKubectlExecRetries = 5
 	// DefaultNamespaceDeletionTimeout is timeout duration for waiting for a namespace deletion.
-	// TODO(mikedanese): reset this to 5 minutes once #47135 is resolved.
-	// ref https://github.com/kubernetes/kubernetes/issues/47135
-	DefaultNamespaceDeletionTimeout = 10 * time.Minute
+	DefaultNamespaceDeletionTimeout = 5 * time.Minute
 )
 
 // Framework supports common operations used by e2e tests; it will keep a client & a namespace for you.
@@ -302,11 +301,7 @@ func (f *Framework) AfterEach() {
 		if TestContext.DeleteNamespace && (TestContext.DeleteNamespaceOnFailure || !ginkgo.CurrentGinkgoTestDescription().Failed) {
 			for _, ns := range f.namespacesToDelete {
 				ginkgo.By(fmt.Sprintf("Destroying namespace %q for this suite.", ns.Name))
-				timeout := DefaultNamespaceDeletionTimeout
-				if f.NamespaceDeletionTimeout != 0 {
-					timeout = f.NamespaceDeletionTimeout
-				}
-				if err := deleteNS(f.ClientSet, f.DynamicClient, ns.Name, timeout); err != nil {
+				if err := f.ClientSet.CoreV1().Namespaces().Delete(ns.Name, nil); err != nil {
 					if !apierrors.IsNotFound(err) {
 						nsDeletionErrors[ns.Name] = err
 					} else {
@@ -567,23 +562,21 @@ func (f *Framework) CreateServiceForSimpleApp(contPort, svcPort int, appName str
 
 // CreatePodsPerNodeForSimpleApp creates pods w/ labels.  Useful for tests which make a bunch of pods w/o any networking.
 func (f *Framework) CreatePodsPerNodeForSimpleApp(appName string, podSpec func(n v1.Node) v1.PodSpec, maxCount int) map[string]string {
-	nodes := GetReadySchedulableNodesOrDie(f.ClientSet)
+	nodes, err := e2enode.GetBoundedReadySchedulableNodes(f.ClientSet, maxCount)
+	ExpectNoError(err)
 	podLabels := map[string]string{
 		"app": appName + "-pod",
 	}
 	for i, node := range nodes.Items {
-		// one per node, but no more than maxCount.
-		if i <= maxCount {
-			Logf("%v/%v : Creating container with label app=%v-pod", i, maxCount, appName)
-			_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(&v1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:   fmt.Sprintf(appName+"-pod-%v", i),
-					Labels: podLabels,
-				},
-				Spec: podSpec(node),
-			})
-			ExpectNoError(err)
-		}
+		Logf("%v/%v : Creating container with label app=%v-pod", i, maxCount, appName)
+		_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(&v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   fmt.Sprintf(appName+"-pod-%v", i),
+				Labels: podLabels,
+			},
+			Spec: podSpec(node),
+		})
+		ExpectNoError(err)
 	}
 	return podLabels
 }

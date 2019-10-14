@@ -50,7 +50,6 @@ import (
 	informers "k8s.io/kube-aggregator/pkg/client/informers/externalversions/apiregistration/v1"
 	"k8s.io/kube-aggregator/pkg/controllers/autoregister"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
-	kubefeatures "k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/master/controller/crdregistration"
 )
 
@@ -65,6 +64,8 @@ func createAggregatorConfig(
 	// make a shallow copy to let us twiddle a few things
 	// most of the config actually remains the same.  We only need to mess with a couple items related to the particulars of the aggregator
 	genericConfig := kubeAPIServerConfig
+	genericConfig.PostStartHooks = map[string]genericapiserver.PostStartHookConfigEntry{}
+	genericConfig.RESTOptionsGetter = nil
 
 	// override genericConfig.AdmissionControl with kube-aggregator's scheme,
 	// because aggregator apiserver should use its own scheme to convert its own resources.
@@ -110,11 +111,10 @@ func createAggregatorConfig(
 			SharedInformerFactory: externalInformers,
 		},
 		ExtraConfig: aggregatorapiserver.ExtraConfig{
-			ProxyClientCert:                  certBytes,
-			ProxyClientKey:                   keyBytes,
-			ServiceResolver:                  serviceResolver,
-			ProxyTransport:                   proxyTransport,
-			EnableAggregatedDiscoveryTimeout: utilfeature.DefaultFeatureGate.Enabled(kubefeatures.EnableAggregatedDiscoveryTimeout),
+			ProxyClientCert: certBytes,
+			ProxyClientKey:  keyBytes,
+			ServiceResolver: serviceResolver,
+			ProxyTransport:  proxyTransport,
 		},
 	}
 

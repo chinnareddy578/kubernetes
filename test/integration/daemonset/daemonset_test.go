@@ -51,7 +51,6 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
 	schedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
-	schedulerframework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	labelsutil "k8s.io/kubernetes/pkg/util/labels"
 	"k8s.io/kubernetes/test/integration/framework"
 )
@@ -107,17 +106,8 @@ func setupScheduler(
 
 	sched, err := scheduler.New(
 		cs,
-		informerFactory.Core().V1().Nodes(),
+		informerFactory,
 		informerFactory.Core().V1().Pods(),
-		informerFactory.Core().V1().PersistentVolumes(),
-		informerFactory.Core().V1().PersistentVolumeClaims(),
-		informerFactory.Core().V1().ReplicationControllers(),
-		informerFactory.Apps().V1().ReplicaSets(),
-		informerFactory.Apps().V1().StatefulSets(),
-		informerFactory.Core().V1().Services(),
-		informerFactory.Policy().V1beta1().PodDisruptionBudgets(),
-		informerFactory.Storage().V1().StorageClasses(),
-		informerFactory.Storage().V1beta1().CSINodes(),
 		eventBroadcaster.NewRecorder(
 			legacyscheme.Scheme,
 			v1.DefaultSchedulerName,
@@ -126,9 +116,6 @@ func setupScheduler(
 			Provider: &defaultProviderName,
 		},
 		stopCh,
-		schedulerframework.NewRegistry(),
-		nil,
-		[]schedulerconfig.PluginConfig{},
 	)
 	if err != nil {
 		t.Fatalf("Couldn't create scheduler: %v", err)

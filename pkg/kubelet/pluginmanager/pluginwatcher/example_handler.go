@@ -28,7 +28,7 @@ import (
 	"google.golang.org/grpc"
 	"k8s.io/klog"
 
-	registerapi "k8s.io/kubernetes/pkg/kubelet/apis/pluginregistration/v1"
+	registerapi "k8s.io/kubelet/pkg/apis/pluginregistration/v1"
 	v1beta1 "k8s.io/kubernetes/pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta1"
 	v1beta2 "k8s.io/kubernetes/pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta2"
 )
@@ -50,7 +50,6 @@ const (
 	exampleEventValidate   examplePluginEvent = 0
 	exampleEventRegister   examplePluginEvent = 1
 	exampleEventDeRegister examplePluginEvent = 2
-	exampleEventError      examplePluginEvent = 3
 )
 
 // NewExampleHandler provide a example handler

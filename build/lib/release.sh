@@ -28,14 +28,8 @@ readonly RELEASE_STAGE="${LOCAL_OUTPUT_ROOT}/release-stage"
 readonly RELEASE_TARS="${LOCAL_OUTPUT_ROOT}/release-tars"
 readonly RELEASE_IMAGES="${LOCAL_OUTPUT_ROOT}/release-images"
 
-KUBE_BUILD_HYPERKUBE=${KUBE_BUILD_HYPERKUBE:-y}
 KUBE_BUILD_CONFORMANCE=${KUBE_BUILD_CONFORMANCE:-y}
 KUBE_BUILD_PULL_LATEST_IMAGES=${KUBE_BUILD_PULL_LATEST_IMAGES:-y}
-
-# The mondo test tarball is deprecated as of Kubernetes 1.14, and the default
-# will be set to 'n' in a future release.
-# See KEP sig-testing/20190118-breaking-apart-the-kubernetes-test-tarball
-KUBE_BUILD_MONDO_TEST_TARBALL=${KUBE_BUILD_MONDO_TEST_TARBALL:-y}
 
 # Validate a ci version
 #
@@ -223,11 +217,6 @@ function kube::release::build_server_images() {
     cp "${KUBE_SERVER_IMAGE_BINARIES[@]/#/${LOCAL_OUTPUT_BINPATH}/${platform}/}" \
       "${release_stage}/server/bin/"
 
-    # if we are building hyperkube, we also need to copy that binary
-    if [[ "${KUBE_BUILD_HYPERKUBE}" =~ [yY] ]]; then
-      cp "${LOCAL_OUTPUT_BINPATH}/${platform}/hyperkube" "${release_stage}/server/bin"
-    fi
-
     kube::release::create_docker_images_for_server "${release_stage}/server/bin" "${arch}"
   done
 }
@@ -289,23 +278,6 @@ function kube::release::sha1() {
   fi
 }
 
-function kube::release::build_hyperkube_image() {
-  local -r arch="$1"
-  local -r registry="$2"
-  local -r version="$3"
-  local -r save_dir="${4-}"
-  kube::log::status "Building hyperkube image for arch: ${arch}"
-  ARCH="${arch}" REGISTRY="${registry}" VERSION="${version}" \
-    make -C cluster/images/hyperkube/ build >/dev/null
-
-  local hyperkube_tag="${registry}/hyperkube-${arch}:${version}"
-  if [[ -n "${save_dir}" ]]; then
-    "${DOCKER[@]}" save "${hyperkube_tag}" > "${save_dir}/hyperkube-${arch}.tar"
-  fi
-  kube::log::status "Deleting hyperkube image ${hyperkube_tag}"
-  "${DOCKER[@]}" rmi "${hyperkube_tag}" &>/dev/null || true
-}
-
 function kube::release::build_conformance_image() {
   local -r arch="$1"
   local -r registry="$2"
@@ -345,6 +317,15 @@ function kube::release::create_docker_images_for_server() {
       return 1
     fi
 
+    # provide `--pull` argument to `docker build` if `KUBE_BUILD_PULL_LATEST_IMAGES`
+    # is set to y or Y; otherwise try to build the image without forcefully
+    # pulling the latest base image.
+    local DOCKER_BUILD_OPTS=()
+    if [[ "${KUBE_BUILD_PULL_LATEST_IMAGES}" =~ [yY] ]]; then
+        DOCKER_BUILD_OPTS+=("--pull")
+    fi
+    local -r docker_build_opts="${DOCKER_BUILD_OPTS[@]}"
+
     for wrappable in "${binaries[@]}"; do
 
       local oldifs=$IFS
@@ -375,14 +356,7 @@ EOF
           echo "COPY nsswitch.conf /etc/" >> "${docker_file_path}"
         fi
 
-        # provide `--pull` argument to `docker build` if `KUBE_BUILD_PULL_LATEST_IMAGES`
-        # is set to y or Y; otherwise try to build the image without forcefully
-        # pulling the latest base image.
-        local -a docker_build_opts=()
-        if [[ "${KUBE_BUILD_PULL_LATEST_IMAGES}" =~ [yY] ]]; then
-            docker_build_opts+=("--pull")
-        fi
-        "${DOCKER[@]}" build "${docker_build_opts[@]}" -q -t "${docker_image_tag}" "${docker_build_path}" >/dev/null
+        "${DOCKER[@]}" build ${docker_build_opts} -q -t "${docker_image_tag}" "${docker_build_path}" >/dev/null
         # If we are building an official/alpha/beta release we want to keep
         # docker images and tag them appropriately.
         local -r release_docker_image_tag="${KUBE_DOCKER_REGISTRY-$docker_registry}/${binary_name}-${arch}:${KUBE_DOCKER_IMAGE_TAG-$docker_tag}"
@@ -401,10 +375,6 @@ EOF
       ) &
     done
 
-    if [[ "${KUBE_BUILD_HYPERKUBE}" =~ [yY] ]]; then
-      kube::release::build_hyperkube_image "${arch}" "${docker_registry}" \
-        "${docker_tag}" "${images_dir}" &
-    fi
     if [[ "${KUBE_BUILD_CONFORMANCE}" =~ [yY] ]]; then
       kube::release::build_conformance_image "${arch}" "${docker_registry}" \
         "${docker_tag}" "${images_dir}" &
@@ -526,48 +496,6 @@ function kube::release::package_test_tarballs() {
 
   local portable_tarball_name="${RELEASE_TARS}/kubernetes-test-portable.tar.gz"
   kube::release::create_tarball "${portable_tarball_name}" "${release_stage}/.."
-
-  if [[ "${KUBE_BUILD_MONDO_TEST_TARBALL}" =~ [yY] ]]; then
-    kube::log::status "Building tarball: test mondo (deprecated by KEP sig-testing/20190118-breaking-apart-the-kubernetes-test-tarball)"
-    local platform
-    for platform in "${KUBE_TEST_PLATFORMS[@]}"; do
-      local test_bins=("${KUBE_TEST_BINARIES[@]}")
-      if [[ "${platform%/*}" == "windows" ]]; then
-        test_bins=("${KUBE_TEST_BINARIES_WIN[@]}")
-      fi
-      mkdir -p "${release_stage}/platforms/${platform}"
-      # This fancy expression will expand to prepend a path
-      # (${LOCAL_OUTPUT_BINPATH}/${platform}/) to every item in the
-      # test_bins array.
-      cp "${test_bins[@]/#/${LOCAL_OUTPUT_BINPATH}/${platform}/}" \
-        "${release_stage}/platforms/${platform}"
-    done
-    for platform in "${KUBE_TEST_SERVER_PLATFORMS[@]}"; do
-      mkdir -p "${release_stage}/platforms/${platform}"
-      # This fancy expression will expand to prepend a path
-      # (${LOCAL_OUTPUT_BINPATH}/${platform}/) to every item in the
-      # KUBE_TEST_SERVER_BINARIES array.
-      cp "${KUBE_TEST_SERVER_BINARIES[@]/#/${LOCAL_OUTPUT_BINPATH}/${platform}/}" \
-        "${release_stage}/platforms/${platform}"
-    done
-
-    cat <<EOF > "${release_stage}/DEPRECATION_NOTICE"
-The mondo test tarball containing binaries for all platforms is
-DEPRECATED as of Kubernetes 1.14.
-
-Users of this tarball should migrate to using the platform-specific
-tarballs in combination with the "portable" tarball which contains
-scripts, test images, and other manifests.
-
-For more details, please see KEP
-sig-testing/20190118-breaking-apart-the-kubernetes-test-tarball.
-EOF
-
-    kube::release::clean_cruft
-
-    local package_name="${RELEASE_TARS}/kubernetes-test.tar.gz"
-    kube::release::create_tarball "${package_name}" "${release_stage}/.."
-  fi
 }
 
 # This is all the platform-independent stuff you need to run/install kubernetes.

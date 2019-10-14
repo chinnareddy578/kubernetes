@@ -20,11 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prometheus/client_golang/prometheus"
-
 	"k8s.io/component-base/metrics"
 	"k8s.io/component-base/metrics/legacyregistry"
-	volumescheduling "k8s.io/kubernetes/pkg/controller/volume/scheduling"
+	volumeschedulingmetrics "k8s.io/kubernetes/pkg/controller/volume/scheduling/metrics"
 )
 
 const (
@@ -60,11 +58,11 @@ var (
 			StabilityLevel: metrics.ALPHA,
 		}, []string{"result"})
 	// PodScheduleSuccesses counts how many pods were scheduled.
-	PodScheduleSuccesses = scheduleAttempts.With(prometheus.Labels{"result": "scheduled"})
+	PodScheduleSuccesses = scheduleAttempts.With(metrics.Labels{"result": "scheduled"})
 	// PodScheduleFailures counts how many pods could not be scheduled.
-	PodScheduleFailures = scheduleAttempts.With(prometheus.Labels{"result": "unschedulable"})
+	PodScheduleFailures = scheduleAttempts.With(metrics.Labels{"result": "unschedulable"})
 	// PodScheduleErrors counts how many pods could not be scheduled due to a scheduler error.
-	PodScheduleErrors = scheduleAttempts.With(prometheus.Labels{"result": "error"})
+	PodScheduleErrors = scheduleAttempts.With(metrics.Labels{"result": "error"})
 	SchedulingLatency = metrics.NewSummaryVec(
 		&metrics.SummaryOpts{
 			Subsystem: SchedulerSubsystem,
@@ -94,7 +92,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "e2e_scheduling_duration_seconds",
 			Help:           "E2e scheduling latency in seconds (scheduling algorithm + binding)",
-			Buckets:        prometheus.ExponentialBuckets(0.001, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -103,7 +101,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "e2e_scheduling_latency_microseconds",
 			Help:           "(Deprecated) E2e scheduling latency in microseconds (scheduling algorithm + binding)",
-			Buckets:        prometheus.ExponentialBuckets(1000, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(1000, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -112,7 +110,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_duration_seconds",
 			Help:           "Scheduling algorithm latency in seconds",
-			Buckets:        prometheus.ExponentialBuckets(0.001, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -121,7 +119,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_latency_microseconds",
 			Help:           "(Deprecated) Scheduling algorithm latency in microseconds",
-			Buckets:        prometheus.ExponentialBuckets(1000, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(1000, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -130,7 +128,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_predicate_evaluation_seconds",
 			Help:           "Scheduling algorithm predicate evaluation duration in seconds",
-			Buckets:        prometheus.ExponentialBuckets(0.001, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -139,7 +137,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_predicate_evaluation",
 			Help:           "(Deprecated) Scheduling algorithm predicate evaluation duration in microseconds",
-			Buckets:        prometheus.ExponentialBuckets(1000, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(1000, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -148,7 +146,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_priority_evaluation_seconds",
 			Help:           "Scheduling algorithm priority evaluation duration in seconds",
-			Buckets:        prometheus.ExponentialBuckets(0.001, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -157,7 +155,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_priority_evaluation",
 			Help:           "(Deprecated) Scheduling algorithm priority evaluation duration in microseconds",
-			Buckets:        prometheus.ExponentialBuckets(1000, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(1000, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -166,7 +164,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_preemption_evaluation_seconds",
 			Help:           "Scheduling algorithm preemption evaluation duration in seconds",
-			Buckets:        prometheus.ExponentialBuckets(0.001, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -175,7 +173,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "scheduling_algorithm_preemption_evaluation",
 			Help:           "(Deprecated) Scheduling algorithm preemption evaluation duration in microseconds",
-			Buckets:        prometheus.ExponentialBuckets(1000, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(1000, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -184,7 +182,7 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "binding_duration_seconds",
 			Help:           "Binding latency in seconds",
-			Buckets:        prometheus.ExponentialBuckets(0.001, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
@@ -193,15 +191,17 @@ var (
 			Subsystem:      SchedulerSubsystem,
 			Name:           "binding_latency_microseconds",
 			Help:           "(Deprecated) Binding latency in microseconds",
-			Buckets:        prometheus.ExponentialBuckets(1000, 2, 15),
+			Buckets:        metrics.ExponentialBuckets(1000, 2, 15),
 			StabilityLevel: metrics.ALPHA,
 		},
 	)
-	PreemptionVictims = metrics.NewGauge(
-		&metrics.GaugeOpts{
-			Subsystem:      SchedulerSubsystem,
-			Name:           "pod_preemption_victims",
-			Help:           "Number of selected preemption victims",
+	PreemptionVictims = metrics.NewHistogram(
+		&metrics.HistogramOpts{
+			Subsystem: SchedulerSubsystem,
+			Name:      "pod_preemption_victims",
+			Help:      "Number of selected preemption victims",
+			// we think #victims>50 is pretty rare, therefore [50, +Inf) is considered a single bucket.
+			Buckets:        metrics.LinearBuckets(5, 5, 10),
 			StabilityLevel: metrics.ALPHA,
 		})
 	PreemptionAttempts = metrics.NewCounter(
@@ -219,6 +219,24 @@ var (
 			Help:           "Number of pending pods, by the queue type. 'active' means number of pods in activeQ; 'backoff' means number of pods in backoffQ; 'unschedulable' means number of pods in unschedulableQ.",
 			StabilityLevel: metrics.ALPHA,
 		}, []string{"queue"})
+
+	PodSchedulingDuration = metrics.NewHistogram(
+		&metrics.HistogramOpts{
+			Subsystem:      SchedulerSubsystem,
+			Name:           "pod_scheduling_duration_seconds",
+			Help:           "E2e latency for a pod being scheduled which may include multiple scheduling attempts.",
+			Buckets:        metrics.ExponentialBuckets(0.001, 2, 15),
+			StabilityLevel: metrics.ALPHA,
+		})
+
+	PodSchedulingAttempts = metrics.NewHistogram(
+		&metrics.HistogramOpts{
+			Subsystem:      SchedulerSubsystem,
+			Name:           "pod_scheduling_attempts",
+			Help:           "Number of attempts to successfully schedule a pod.",
+			Buckets:        metrics.ExponentialBuckets(1, 2, 5),
+			StabilityLevel: metrics.ALPHA,
+		})
 
 	metricsList = []metrics.Registerable{
 		scheduleAttempts,
@@ -239,6 +257,8 @@ var (
 		PreemptionVictims,
 		PreemptionAttempts,
 		pendingPods,
+		PodSchedulingDuration,
+		PodSchedulingAttempts,
 	}
 )
 
@@ -251,23 +271,28 @@ func Register() {
 		for _, metric := range metricsList {
 			legacyregistry.MustRegister(metric)
 		}
-		volumescheduling.RegisterVolumeSchedulingMetrics()
+		volumeschedulingmetrics.RegisterVolumeSchedulingMetrics()
 	})
+}
+
+// GetGather returns the gatherer. It used by test case outside current package.
+func GetGather() metrics.Gatherer {
+	return legacyregistry.DefaultGatherer
 }
 
 // ActivePods returns the pending pods metrics with the label active
 func ActivePods() metrics.GaugeMetric {
-	return pendingPods.With(prometheus.Labels{"queue": "active"})
+	return pendingPods.With(metrics.Labels{"queue": "active"})
 }
 
 // BackoffPods returns the pending pods metrics with the label backoff
 func BackoffPods() metrics.GaugeMetric {
-	return pendingPods.With(prometheus.Labels{"queue": "backoff"})
+	return pendingPods.With(metrics.Labels{"queue": "backoff"})
 }
 
 // UnschedulablePods returns the pending pods metrics with the label unschedulable
 func UnschedulablePods() metrics.GaugeMetric {
-	return pendingPods.With(prometheus.Labels{"queue": "unschedulable"})
+	return pendingPods.With(metrics.Labels{"queue": "unschedulable"})
 }
 
 // Reset resets metrics
