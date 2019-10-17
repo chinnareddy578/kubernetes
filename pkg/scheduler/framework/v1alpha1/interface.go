@@ -31,9 +31,6 @@ import (
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
-// Code is the Status code/type which is returned from plugins.
-type Code int
-
 // NodeScoreList declares a list of nodes and their scores.
 type NodeScoreList []NodeScore
 
@@ -48,6 +45,9 @@ type PluginToNodeScores map[string]NodeScoreList
 
 // NodeToStatusMap declares map from node name to its status.
 type NodeToStatusMap map[string]*Status
+
+// Code is the Status code/type which is returned from plugins.
+type Code int
 
 // These are predefined codes used in a Status.
 const (
@@ -71,6 +71,13 @@ const (
 	// Skip is used when a bind plugin chooses to skip binding.
 	Skip
 )
+
+// This list should be exactly the same as the codes iota defined above in the same order.
+var codes = []string{"Success", "Error", "Unschedulable", "UnschedulableAndUnresolvable", "Wait", "Skip"}
+
+func (c Code) String() string {
+	return codes[c]
+}
 
 const (
 	// MaxNodeScore is the maximum score a Score plugin is expected to return.
@@ -427,6 +434,9 @@ type Framework interface {
 	// or "Success". If none of the plugins handled binding, RunBindPlugins returns
 	// code=4("skip") status.
 	RunBindPlugins(state *CycleState, pod *v1.Pod, nodeName string) *Status
+
+	// HasFilterPlugins return true if at least one filter plugin is defined
+	HasFilterPlugins() bool
 
 	// ListPlugins returns a map of extension point name to list of configured Plugins.
 	ListPlugins() map[string][]config.Plugin

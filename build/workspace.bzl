@@ -28,18 +28,21 @@ _CNI_TARBALL_ARCH_SHA256 = {
 
 CRI_TOOLS_VERSION = "1.16.1"
 _CRI_TARBALL_ARCH_SHA256 = {
-    "amd64": "19fed421710fccfe58f5573383bb137c19438a9056355556f1a15da8d23b3ad1",
-    "arm": "367826f3eb06c4d923f3174d23141ddacef9ffcb0c902502bd922dbad86d08dd",
-    "arm64": "62b60ab7046b788df892a1b746bd602c520a59c38232febc0580692c9805f641",
-    "ppc64le": "d6464188a5011242b8dad22cb1e55d8cb29d6873f3d1f3f3c32bb236d3fca64e",
-    "s390x": "f3d5e707810d7985f6a470ea439ca5989c0ee218a824795ed1726f4958281a2d",
+    "linux-386": "35b721a7a90a12cf9689fb1f4fe5b50f73520200130a52b552234bd798d2ae9f",
+    "linux-amd64": "19fed421710fccfe58f5573383bb137c19438a9056355556f1a15da8d23b3ad1",
+    "linux-arm": "367826f3eb06c4d923f3174d23141ddacef9ffcb0c902502bd922dbad86d08dd",
+    "linux-arm64": "62b60ab7046b788df892a1b746bd602c520a59c38232febc0580692c9805f641",
+    "linux-ppc64le": "d6464188a5011242b8dad22cb1e55d8cb29d6873f3d1f3f3c32bb236d3fca64e",
+    "linux-s390x": "f3d5e707810d7985f6a470ea439ca5989c0ee218a824795ed1726f4958281a2d",
+    "windows-386": "b7564675f69aa2a01b092874c9c9aeda084204384d711a6fb85c6d2328ca5c7d",
+    "windows-amd64": "7d092dcb3b1af2edf75477d5d049a70e8c0d1ac8242b1dff2de7e6aa084e3615",
 }
 
-ETCD_VERSION = "3.3.15"
+ETCD_VERSION = "3.3.17"
 _ETCD_TARBALL_ARCH_SHA256 = {
-    "amd64": "87e30dc472a48b775a9e764cb742a5df0a2844e7b82d12917d7ea489febbc8c8",
-    "arm64": "0cdacf1a5f8095322ee77b62ac5e79c3326a5166deb69f558214b110b312b4c0",
-    "ppc64le": "dcaa8d0ec1a117f6456778f3b9c7e685d4609c2a3c448afda1aa7a4232d0c481",
+    "amd64": "8c1168a24d17a2d6772f8148ea35d4f3398c51f1e23db90c849d506adb387060",
+    "arm64": "0ea20dfbf3085f584f788287fd398979d0f1271549be6497d81ec635b9b4c121",
+    "ppc64le": "49cef090eb67f0d24ebd1733303ed2088c291ad47c60f57746da9f689aa1de7a",
 }
 
 # Dependencies needed for a Kubernetes "release", e.g. building docker images,
@@ -65,7 +68,7 @@ def cri_tarballs():
             name = "cri_tools_%s" % arch,
             downloaded_file_path = "cri_tools.tgz",
             sha256 = sha,
-            urls = mirror("https://github.com/kubernetes-incubator/cri-tools/releases/download/v%s/crictl-v%s-linux-%s.tar.gz" % (CRI_TOOLS_VERSION, CRI_TOOLS_VERSION, arch)),
+            urls = mirror("https://github.com/kubernetes-incubator/cri-tools/releases/download/v%s/crictl-v%s-%s.tar.gz" % (CRI_TOOLS_VERSION, CRI_TOOLS_VERSION, arch)),
         )
 
 # Use go get -u github.com/estesp/manifest-tool to find these values
