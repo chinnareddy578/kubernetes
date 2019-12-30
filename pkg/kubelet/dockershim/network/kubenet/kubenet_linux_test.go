@@ -31,7 +31,7 @@ import (
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/dockershim/network"
-	"k8s.io/kubernetes/pkg/kubelet/dockershim/network/cni/testing"
+	mockcni "k8s.io/kubernetes/pkg/kubelet/dockershim/network/cni/testing"
 	hostporttest "k8s.io/kubernetes/pkg/kubelet/dockershim/network/hostport/testing"
 	nettest "k8s.io/kubernetes/pkg/kubelet/dockershim/network/testing"
 	"k8s.io/kubernetes/pkg/util/bandwidth"
@@ -58,6 +58,7 @@ func TestGetPodNetworkStatus(t *testing.T) {
 	podIPMap[kubecontainer.ContainerID{ID: "1"}] = utilsets.NewString("10.245.0.2")
 	podIPMap[kubecontainer.ContainerID{ID: "2"}] = utilsets.NewString("10.245.0.3")
 	podIPMap[kubecontainer.ContainerID{ID: "3"}] = utilsets.NewString("10.245.0.4", "2000::")
+	podIPMap[kubecontainer.ContainerID{ID: "4"}] = utilsets.NewString("2000::2")
 
 	testCases := []struct {
 		id          string
@@ -80,6 +81,11 @@ func TestGetPodNetworkStatus(t *testing.T) {
 			expectError: false,
 			expectIP:    utilsets.NewString("10.245.0.4", "2000::"),
 		},
+		{
+			id:          "4",
+			expectError: false,
+			expectIP:    utilsets.NewString("2000::2"),
+		},
 
 		//not in podIP map
 		{
@@ -94,14 +100,14 @@ func TestGetPodNetworkStatus(t *testing.T) {
 	for _, t := range testCases {
 		// the fake commands return the IP from the given index, or an error
 		fCmd := fakeexec.FakeCmd{
-			CombinedOutputScript: []fakeexec.FakeCombinedOutputAction{
-				func() ([]byte, error) {
+			CombinedOutputScript: []fakeexec.FakeAction{
+				func() ([]byte, []byte, error) {
 					ips, ok := podIPMap[kubecontainer.ContainerID{ID: t.id}]
 					if !ok {
-						return nil, fmt.Errorf("Pod IP %q not found", t.id)
+						return nil, nil, fmt.Errorf("Pod IP %q not found", t.id)
 					}
 					ipsList := ips.UnsortedList()
-					return []byte(ipsList[0]), nil
+					return []byte(ipsList[0]), nil, nil
 				},
 			},
 		}
@@ -159,7 +165,7 @@ func TestTeardownCallsShaper(t *testing.T) {
 	}
 	fhost := nettest.NewFakeHost(nil)
 	fshaper := &bandwidth.FakeShaper{}
-	mockcni := &mock_cni.MockCNI{}
+	mockcni := &mockcni.MockCNI{}
 	ips := make(map[kubecontainer.ContainerID]utilsets.String)
 	kubenet := newFakeKubenetPlugin(ips, fexec, fhost)
 	kubenet.loConfig = &libcni.NetworkConfig{
@@ -196,9 +202,9 @@ func TestInit_MTU(t *testing.T) {
 	{
 		// modprobe br-netfilter
 		fCmd := fakeexec.FakeCmd{
-			CombinedOutputScript: []fakeexec.FakeCombinedOutputAction{
-				func() ([]byte, error) {
-					return make([]byte, 0), nil
+			CombinedOutputScript: []fakeexec.FakeAction{
+				func() ([]byte, []byte, error) {
+					return make([]byte, 0), nil, nil
 				},
 			},
 		}
@@ -253,7 +259,7 @@ func TestTearDownWithoutRuntime(t *testing.T) {
 
 		fhost := nettest.NewFakeHost(nil)
 		fhost.Legacy = false
-		mockcni := &mock_cni.MockCNI{}
+		mockcni := &mockcni.MockCNI{}
 
 		fexec := &fakeexec.FakeExec{
 			CommandScript: []fakeexec.FakeCommandAction{},

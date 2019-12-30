@@ -33,7 +33,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	storagev1beta1 "k8s.io/api/storage/v1beta1"
-	apierrs "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -69,14 +69,20 @@ func checkAWSEBS(volume *v1.PersistentVolume, volumeType string, encrypted bool)
 	volumeID := tokens[len(tokens)-1]
 
 	zone := framework.TestContext.CloudConfig.Zone
+
+	awsSession, err := session.NewSession()
+	if err != nil {
+		return fmt.Errorf("error creating session: %v", err)
+	}
+
 	if len(zone) > 0 {
 		region := zone[:len(zone)-1]
 		cfg := aws.Config{Region: &region}
 		framework.Logf("using region %s", region)
-		client = ec2.New(session.New(), &cfg)
+		client = ec2.New(awsSession, &cfg)
 	} else {
 		framework.Logf("no region configured")
-		client = ec2.New(session.New())
+		client = ec2.New(awsSession)
 	}
 
 	request := &ec2.DescribeVolumesInput{
@@ -414,14 +420,13 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			var suffix string = "unmananged"
 
 			ginkgo.By("Discovering an unmanaged zone")
-			allZones := sets.NewString()     // all zones in the project
-			managedZones := sets.NewString() // subset of allZones
+			allZones := sets.NewString() // all zones in the project
 
 			gceCloud, err := gce.GetGCECloud()
 			framework.ExpectNoError(err)
 
 			// Get all k8s managed zones (same as zones with nodes in them for test)
-			managedZones, err = gceCloud.GetAllZonesFromCloudProvider()
+			managedZones, err := gceCloud.GetAllZonesFromCloudProvider()
 			framework.ExpectNoError(err)
 
 			// Get a list of all zones in the project
@@ -805,7 +810,7 @@ var _ = utils.SIGDescribe("Dynamic Provisioning", func() {
 			defer func() {
 				framework.Logf("deleting claim %q/%q", claim.Namespace, claim.Name)
 				err = c.CoreV1().PersistentVolumeClaims(claim.Namespace).Delete(claim.Name, nil)
-				if err != nil && !apierrs.IsNotFound(err) {
+				if err != nil && !apierrors.IsNotFound(err) {
 					framework.Failf("Error deleting claim %q. Error: %v", claim.Name, err)
 				}
 			}()
@@ -864,7 +869,7 @@ func updateDefaultStorageClass(c clientset.Interface, scName string, defaultStr 
 		sc.Annotations[storageutil.IsDefaultStorageClassAnnotation] = defaultStr
 	}
 
-	sc, err = c.StorageV1().StorageClasses().Update(sc)
+	_, err = c.StorageV1().StorageClasses().Update(sc)
 	framework.ExpectNoError(err)
 
 	expectedDefault := false
@@ -1034,7 +1039,7 @@ func waitForProvisionedVolumesDeleted(c clientset.Interface, scName string) ([]*
 // deleteStorageClass deletes the passed in StorageClass and catches errors other than "Not Found"
 func deleteStorageClass(c clientset.Interface, className string) {
 	err := c.StorageV1().StorageClasses().Delete(className, nil)
-	if err != nil && !apierrs.IsNotFound(err) {
+	if err != nil && !apierrors.IsNotFound(err) {
 		framework.ExpectNoError(err)
 	}
 }

@@ -17,12 +17,13 @@ limitations under the License.
 package nodepreferavoidpods
 
 import (
+	"context"
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/priorities"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
 
@@ -32,7 +33,7 @@ type NodePreferAvoidPods struct {
 	handle framework.FrameworkHandle
 }
 
-var _ = framework.ScorePlugin(&NodePreferAvoidPods{})
+var _ framework.ScorePlugin = &NodePreferAvoidPods{}
 
 // Name is the name of the plugin used in the plugin registry and configurations.
 const Name = "NodePreferAvoidPods"
@@ -43,15 +44,41 @@ func (pl *NodePreferAvoidPods) Name() string {
 }
 
 // Score invoked at the score extension point.
-func (pl *NodePreferAvoidPods) Score(state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
-	nodeInfo, exist := pl.handle.NodeInfoSnapshot().NodeInfoMap[nodeName]
-	if !exist {
-		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("node %q does not exist in NodeInfoSnapshot", nodeName))
+func (pl *NodePreferAvoidPods) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
+	nodeInfo, err := pl.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
+	if err != nil {
+		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("getting node %q from Snapshot: %v", nodeName, err))
 	}
 
-	meta := migration.PriorityMetadata(state)
-	s, err := priorities.CalculateNodePreferAvoidPodsPriorityMap(pod, meta, nodeInfo)
-	return s.Score, migration.ErrorToFrameworkStatus(err)
+	node := nodeInfo.Node()
+	if node == nil {
+		return 0, framework.NewStatus(framework.Error, "node not found")
+	}
+
+	controllerRef := metav1.GetControllerOf(pod)
+	if controllerRef != nil {
+		// Ignore pods that are owned by other controller than ReplicationController
+		// or ReplicaSet.
+		if controllerRef.Kind != "ReplicationController" && controllerRef.Kind != "ReplicaSet" {
+			controllerRef = nil
+		}
+	}
+	if controllerRef == nil {
+		return framework.MaxNodeScore, nil
+	}
+
+	avoids, err := v1helper.GetAvoidPodsFromNodeAnnotations(node.Annotations)
+	if err != nil {
+		// If we cannot get annotation, assume it's schedulable there.
+		return framework.MaxNodeScore, nil
+	}
+	for i := range avoids.PreferAvoidPods {
+		avoid := &avoids.PreferAvoidPods[i]
+		if avoid.PodSignature.PodController.Kind == controllerRef.Kind && avoid.PodSignature.PodController.UID == controllerRef.UID {
+			return 0, nil
+		}
+	}
+	return framework.MaxNodeScore, nil
 }
 
 // ScoreExtensions of the Score plugin.

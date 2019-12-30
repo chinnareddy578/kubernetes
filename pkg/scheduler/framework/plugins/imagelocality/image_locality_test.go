@@ -17,17 +17,16 @@ limitations under the License.
 package imagelocality
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"reflect"
 	"testing"
 
-	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/priorities"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
-	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
-	schedulertesting "k8s.io/kubernetes/pkg/scheduler/testing"
+	nodeinfosnapshot "k8s.io/kubernetes/pkg/scheduler/nodeinfo/snapshot"
 	"k8s.io/kubernetes/pkg/util/parsers"
 )
 
@@ -35,6 +34,7 @@ func TestImageLocalityPriority(t *testing.T) {
 	test40250 := v1.PodSpec{
 		Containers: []v1.Container{
 			{
+
 				Image: "gcr.io/40",
 			},
 			{
@@ -186,28 +186,17 @@ func TestImageLocalityPriority(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			metaDataProducer := priorities.NewPriorityMetadataFactory(
-				schedulertesting.FakeServiceLister([]*v1.Service{}),
-				schedulertesting.FakeControllerLister([]*v1.ReplicationController{}),
-				schedulertesting.FakeReplicaSetLister([]*apps.ReplicaSet{}),
-				schedulertesting.FakeStatefulSetLister([]*apps.StatefulSet{}))
-
-			nodeNameToInfo := schedulernodeinfo.CreateNodeNameToInfoMap(nil, test.nodes)
-
-			meta := metaDataProducer(test.pod, nodeNameToInfo)
+			snapshot := nodeinfosnapshot.NewSnapshot(nodeinfosnapshot.CreateNodeInfoMap(nil, test.nodes))
 
 			state := framework.NewCycleState()
-			state.Write(migration.PrioritiesStateKey, &migration.PrioritiesStateData{Reference: meta})
 
-			fh, _ := framework.NewFramework(nil, nil, nil)
-			snapshot := fh.NodeInfoSnapshot()
-			snapshot.NodeInfoMap = schedulernodeinfo.CreateNodeNameToInfoMap(nil, test.nodes)
+			fh, _ := framework.NewFramework(nil, nil, nil, framework.WithSnapshotSharedLister(snapshot))
 
 			p, _ := New(nil, fh)
 			var gotList framework.NodeScoreList
 			for _, n := range test.nodes {
 				nodeName := n.ObjectMeta.Name
-				score, status := p.(framework.ScorePlugin).Score(state, test.pod, nodeName)
+				score, status := p.(framework.ScorePlugin).Score(context.Background(), state, test.pod, nodeName)
 				if !status.IsSuccess() {
 					t.Errorf("unexpected error: %v", status)
 				}
@@ -221,9 +210,34 @@ func TestImageLocalityPriority(t *testing.T) {
 	}
 }
 
+func TestNormalizedImageName(t *testing.T) {
+	for _, testCase := range []struct {
+		Name   string
+		Input  string
+		Output string
+	}{
+		{Name: "add :latest postfix 1", Input: "root", Output: "root:latest"},
+		{Name: "add :latest postfix 2", Input: "gcr.io:5000/root", Output: "gcr.io:5000/root:latest"},
+		{Name: "keep it as is 1", Input: "root:tag", Output: "root:tag"},
+		{Name: "keep it as is 2", Input: "root@" + getImageFakeDigest("root"), Output: "root@" + getImageFakeDigest("root")},
+	} {
+		t.Run(testCase.Name, func(t *testing.T) {
+			image := normalizedImageName(testCase.Input)
+			if image != testCase.Output {
+				t.Errorf("expected image reference: %q, got %q", testCase.Output, image)
+			}
+		})
+	}
+}
+
 func makeImageNode(node string, status v1.NodeStatus) *v1.Node {
 	return &v1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: node},
 		Status:     status,
 	}
+}
+
+func getImageFakeDigest(fakeContent string) string {
+	hash := sha256.Sum256([]byte(fakeContent))
+	return "sha256:" + hex.EncodeToString(hash[:])
 }

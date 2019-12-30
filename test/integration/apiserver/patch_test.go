@@ -22,10 +22,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/pborman/uuid"
+	"github.com/google/uuid"
 
 	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -45,7 +45,7 @@ func TestPatchConflicts(t *testing.T) {
 	UIDs := make([]types.UID, numOfConcurrentPatches)
 	ownerRefs := []metav1.OwnerReference{}
 	for i := 0; i < numOfConcurrentPatches; i++ {
-		uid := types.UID(uuid.NewRandom().String())
+		uid := types.UID(uuid.New().String())
 		ownerName := fmt.Sprintf("owner-%d", i)
 		UIDs[i] = uid
 		ownerRefs = append(ownerRefs, metav1.OwnerReference{
@@ -76,7 +76,7 @@ func TestPatchConflicts(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			labelName := fmt.Sprintf("label-%d", i)
-			value := uuid.NewRandom().String()
+			value := uuid.New().String()
 
 			obj, err := client.Patch(types.StrategicMergePatchType).
 				Namespace(ns.Name).
@@ -86,7 +86,7 @@ func TestPatchConflicts(t *testing.T) {
 				Do().
 				Get()
 
-			if errors.IsConflict(err) {
+			if apierrors.IsConflict(err) {
 				t.Logf("tolerated conflict error patching %s: %v", "secrets", err)
 				return
 			}
