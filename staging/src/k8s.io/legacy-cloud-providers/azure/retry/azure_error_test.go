@@ -19,7 +19,9 @@ limitations under the License.
 package retry
 
 import (
+	"bytes"
 	"fmt"
+	"io/ioutil"
 	"net/http"
 	"testing"
 	"time"
@@ -44,11 +46,11 @@ func TestGetError(t *testing.T) {
 		},
 		{
 			code: http.StatusOK,
-			err:  fmt.Errorf("some error"),
+			err:  fmt.Errorf("unknown error"),
 			expected: &Error{
 				Retriable:      true,
 				HTTPStatusCode: http.StatusOK,
-				RawError:       fmt.Errorf("some error"),
+				RawError:       fmt.Errorf("unknown error"),
 			},
 		},
 		{
@@ -56,7 +58,7 @@ func TestGetError(t *testing.T) {
 			expected: &Error{
 				Retriable:      false,
 				HTTPStatusCode: http.StatusBadRequest,
-				RawError:       fmt.Errorf("HTTP response: 400"),
+				RawError:       fmt.Errorf("some error"),
 			},
 		},
 		{
@@ -64,14 +66,14 @@ func TestGetError(t *testing.T) {
 			expected: &Error{
 				Retriable:      true,
 				HTTPStatusCode: http.StatusInternalServerError,
-				RawError:       fmt.Errorf("HTTP response: 500"),
+				RawError:       fmt.Errorf("some error"),
 			},
 		},
 		{
 			code: http.StatusSeeOther,
 			err:  fmt.Errorf("some error"),
 			expected: &Error{
-				Retriable:      true,
+				Retriable:      false,
 				HTTPStatusCode: http.StatusSeeOther,
 				RawError:       fmt.Errorf("some error"),
 			},
@@ -80,10 +82,10 @@ func TestGetError(t *testing.T) {
 			code:       http.StatusTooManyRequests,
 			retryAfter: 100,
 			expected: &Error{
-				Retriable:      true,
+				Retriable:      false,
 				HTTPStatusCode: http.StatusTooManyRequests,
 				RetryAfter:     now().Add(100 * time.Second),
-				RawError:       fmt.Errorf("HTTP response: 429"),
+				RawError:       fmt.Errorf("some error"),
 			},
 		},
 	}
@@ -92,6 +94,7 @@ func TestGetError(t *testing.T) {
 		resp := &http.Response{
 			StatusCode: test.code,
 			Header:     http.Header{},
+			Body:       ioutil.NopCloser(bytes.NewReader([]byte("some error"))),
 		}
 		if test.retryAfter != 0 {
 			resp.Header.Add("Retry-After", fmt.Sprintf("%d", test.retryAfter))
@@ -138,7 +141,7 @@ func TestGetStatusNotFoundAndForbiddenIgnoredError(t *testing.T) {
 			expected: &Error{
 				Retriable:      false,
 				HTTPStatusCode: http.StatusBadRequest,
-				RawError:       fmt.Errorf("HTTP response: 400"),
+				RawError:       fmt.Errorf("some error"),
 			},
 		},
 		{
@@ -146,14 +149,14 @@ func TestGetStatusNotFoundAndForbiddenIgnoredError(t *testing.T) {
 			expected: &Error{
 				Retriable:      true,
 				HTTPStatusCode: http.StatusInternalServerError,
-				RawError:       fmt.Errorf("HTTP response: 500"),
+				RawError:       fmt.Errorf("some error"),
 			},
 		},
 		{
 			code: http.StatusSeeOther,
 			err:  fmt.Errorf("some error"),
 			expected: &Error{
-				Retriable:      true,
+				Retriable:      false,
 				HTTPStatusCode: http.StatusSeeOther,
 				RawError:       fmt.Errorf("some error"),
 			},
@@ -162,10 +165,10 @@ func TestGetStatusNotFoundAndForbiddenIgnoredError(t *testing.T) {
 			code:       http.StatusTooManyRequests,
 			retryAfter: 100,
 			expected: &Error{
-				Retriable:      true,
+				Retriable:      false,
 				HTTPStatusCode: http.StatusTooManyRequests,
 				RetryAfter:     now().Add(100 * time.Second),
-				RawError:       fmt.Errorf("HTTP response: 429"),
+				RawError:       fmt.Errorf("some error"),
 			},
 		},
 	}
@@ -174,6 +177,7 @@ func TestGetStatusNotFoundAndForbiddenIgnoredError(t *testing.T) {
 		resp := &http.Response{
 			StatusCode: test.code,
 			Header:     http.Header{},
+			Body:       ioutil.NopCloser(bytes.NewReader([]byte("some error"))),
 		}
 		if test.retryAfter != 0 {
 			resp.Header.Add("Retry-After", fmt.Sprintf("%d", test.retryAfter))
@@ -249,5 +253,40 @@ func TestIsSuccessResponse(t *testing.T) {
 		if res != test.expected {
 			t.Errorf("expected: %v, saw: %v", test.expected, res)
 		}
+	}
+}
+
+func TestIsThrottled(t *testing.T) {
+	tests := []struct {
+		err      *Error
+		expected bool
+	}{
+		{
+			err:      nil,
+			expected: false,
+		},
+		{
+			err: &Error{
+				HTTPStatusCode: http.StatusOK,
+			},
+			expected: false,
+		},
+		{
+			err: &Error{
+				HTTPStatusCode: http.StatusTooManyRequests,
+			},
+			expected: true,
+		},
+		{
+			err: &Error{
+				RetryAfter: time.Now().Add(time.Hour),
+			},
+			expected: true,
+		},
+	}
+
+	for _, test := range tests {
+		real := test.err.IsThrottled()
+		assert.Equal(t, test.expected, real)
 	}
 }

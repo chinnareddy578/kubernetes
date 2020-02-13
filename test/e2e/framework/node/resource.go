@@ -17,6 +17,7 @@ limitations under the License.
 package node
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"strings"
@@ -24,17 +25,14 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/sets"
-	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	nodectlr "k8s.io/kubernetes/pkg/controller/nodelifecycle"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
 	"k8s.io/kubernetes/test/e2e/system"
-	testutils "k8s.io/kubernetes/test/utils"
 )
 
 const (
@@ -59,18 +57,15 @@ type PodNode struct {
 }
 
 // FirstAddress returns the first address of the given type of each node.
-// TODO: Use return type string instead of []string
-func FirstAddress(nodelist *v1.NodeList, addrType v1.NodeAddressType) []string {
-	hosts := []string{}
+func FirstAddress(nodelist *v1.NodeList, addrType v1.NodeAddressType) string {
 	for _, n := range nodelist.Items {
 		for _, addr := range n.Status.Addresses {
 			if addr.Type == addrType && addr.Address != "" {
-				hosts = append(hosts, addr.Address)
-				break
+				return addr.Address
 			}
 		}
 	}
-	return hosts
+	return ""
 }
 
 // TODO: better to change to a easy read name
@@ -156,7 +151,6 @@ func IsConditionUnset(node *v1.Node, conditionType v1.NodeConditionType) bool {
 
 // Filter filters nodes in NodeList in place, removing nodes that do not
 // satisfy the given condition
-// TODO: consider merging with pkg/client/cache.NodeLister
 func Filter(nodeList *v1.NodeList, fn func(node v1.Node) bool) {
 	var l []v1.Node
 
@@ -191,63 +185,6 @@ func TotalReady(c clientset.Interface) (int, error) {
 		return IsConditionSetAsExpected(&node, v1.NodeReady, true)
 	})
 	return len(nodes.Items), nil
-}
-
-// getSvcNodePort returns the node port for the given service:port.
-func getSvcNodePort(client clientset.Interface, ns, name string, svcPort int) (int, error) {
-	svc, err := client.CoreV1().Services(ns).Get(name, metav1.GetOptions{})
-	if err != nil {
-		return 0, err
-	}
-	for _, p := range svc.Spec.Ports {
-		if p.Port == int32(svcPort) {
-			if p.NodePort != 0 {
-				return int(p.NodePort), nil
-			}
-		}
-	}
-	return 0, fmt.Errorf(
-		"No node port found for service %v, port %v", name, svcPort)
-}
-
-// GetPortURL returns the url to a nodeport Service.
-func GetPortURL(client clientset.Interface, ns, name string, svcPort int) (string, error) {
-	nodePort, err := getSvcNodePort(client, ns, name, svcPort)
-	if err != nil {
-		return "", err
-	}
-	// This list of nodes must not include the master, which is marked
-	// unschedulable, since the master doesn't run kube-proxy. Without
-	// kube-proxy NodePorts won't work.
-	var nodes *v1.NodeList
-	if wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
-		nodes, err = client.CoreV1().Nodes().List(metav1.ListOptions{FieldSelector: fields.Set{
-			"spec.unschedulable": "false",
-		}.AsSelector().String()})
-		if err != nil {
-			if testutils.IsRetryableAPIError(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	}) != nil {
-		return "", err
-	}
-	if len(nodes.Items) == 0 {
-		return "", fmt.Errorf("Unable to list nodes in cluster")
-	}
-	for _, node := range nodes.Items {
-		for _, address := range node.Status.Addresses {
-			if address.Type == v1.NodeExternalIP {
-				if address.Address != "" {
-					host := net.JoinHostPort(address.Address, fmt.Sprint(nodePort))
-					return fmt.Sprintf("http://%s", host), nil
-				}
-			}
-		}
-	}
-	return "", fmt.Errorf("Failed to find external address for service %v", name)
 }
 
 // GetExternalIP returns node external IP concatenated with port 22 for ssh
@@ -336,7 +273,6 @@ func GetPublicIps(c clientset.Interface) ([]string, error) {
 // 2) Needs to be ready.
 // If EITHER 1 or 2 is not true, most tests will want to ignore the node entirely.
 // If there are no nodes that are both ready and schedulable, this will return an error.
-// TODO: remove references in framework/util.go.
 func GetReadySchedulableNodes(c clientset.Interface) (nodes *v1.NodeList, err error) {
 	nodes, err = checkWaitListSchedulableNodes(c)
 	if err != nil {
@@ -401,7 +337,7 @@ func GetReadyNodesIncludingTainted(c clientset.Interface) (nodes *v1.NodeList, e
 func GetMasterAndWorkerNodes(c clientset.Interface) (sets.String, *v1.NodeList, error) {
 	nodes := &v1.NodeList{}
 	masters := sets.NewString()
-	all, err := c.CoreV1().Nodes().List(metav1.ListOptions{})
+	all, err := c.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return nil, nil, fmt.Errorf("get nodes error: %s", err)
 	}
@@ -466,12 +402,15 @@ func isNodeUntaintedWithNonblocking(node *v1.Node, nonblockingTaints string) boo
 		nodeInfo.SetNode(node)
 	}
 
-	fit, _, err := predicates.PodToleratesNodeTaints(fakePod, nil, nodeInfo)
+	taints, err := nodeInfo.Taints()
 	if err != nil {
 		e2elog.Failf("Can't test predicates for node %s: %v", node.Name, err)
 		return false
 	}
-	return fit
+
+	return v1helper.TolerationsTolerateTaintsWithFilter(fakePod.Spec.Tolerations, taints, func(t *v1.Taint) bool {
+		return t.Effect == v1.TaintEffectNoExecute || t.Effect == v1.TaintEffectNoSchedule
+	})
 }
 
 // IsNodeSchedulable returns true if:
@@ -522,7 +461,7 @@ func hasNonblockingTaint(node *v1.Node, nonblockingTaints string) bool {
 func PodNodePairs(c clientset.Interface, ns string) ([]PodNode, error) {
 	var result []PodNode
 
-	podList, err := c.CoreV1().Pods(ns).List(metav1.ListOptions{})
+	podList, err := c.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return result, err
 	}

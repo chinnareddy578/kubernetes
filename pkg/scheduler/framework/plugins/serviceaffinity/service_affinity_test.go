@@ -22,14 +22,12 @@ import (
 	"sort"
 	"testing"
 
-	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/priorities"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	"k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	fakelisters "k8s.io/kubernetes/pkg/scheduler/listers/fake"
-	nodeinfosnapshot "k8s.io/kubernetes/pkg/scheduler/nodeinfo/snapshot"
+	"k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
 func TestServiceAffinity(t *testing.T) {
@@ -162,7 +160,7 @@ func TestServiceAffinity(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			nodes := []*v1.Node{&node1, &node2, &node3, &node4, &node5}
-			snapshot := nodeinfosnapshot.NewSnapshot(nodeinfosnapshot.CreateNodeInfoMap(test.pods, nodes))
+			snapshot := cache.NewSnapshot(test.pods, nodes)
 
 			p := &ServiceAffinity{
 				sharedLister:  snapshot,
@@ -176,7 +174,8 @@ func TestServiceAffinity(t *testing.T) {
 			if s := p.PreFilter(context.Background(), state, test.pod); !s.IsSuccess() {
 				t.Errorf("PreFilter failed: %v", s.Message())
 			}
-			status := p.Filter(context.Background(), state, test.pod, snapshot.NodeInfoMap[test.node.Name])
+			nodeInfo := mustGetNodeInfo(t, snapshot, test.node.Name)
+			status := p.Filter(context.Background(), state, test.pod, nodeInfo)
 			if status.Code() != test.res {
 				t.Errorf("Status mismatch. got: %v, want: %v", status.Code(), test.res)
 			}
@@ -380,16 +379,11 @@ func TestServiceAffinityScore(t *testing.T) {
 			name: "three pods, two service pods, with rack label",
 		},
 	}
-	// these local variables just make sure controllerLister\replicaSetLister\statefulSetLister not nil
-	// when construct metaDataProducer
-	sss := []*apps.StatefulSet{{Spec: apps.StatefulSetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}}}}}
-	rcs := []*v1.ReplicationController{{Spec: v1.ReplicationControllerSpec{Selector: map[string]string{"foo": "bar"}}}}
-	rss := []*apps.ReplicaSet{{Spec: apps.ReplicaSetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}}}}}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			nodes := makeLabeledNodeList(test.nodes)
-			snapshot := nodeinfosnapshot.NewSnapshot(nodeinfosnapshot.CreateNodeInfoMap(test.pods, nodes))
+			snapshot := cache.NewSnapshot(test.pods, nodes)
 			serviceLister := fakelisters.ServiceLister(test.services)
 
 			p := &ServiceAffinity{
@@ -399,15 +393,7 @@ func TestServiceAffinityScore(t *testing.T) {
 					AntiAffinityLabelsPreference: test.labels,
 				},
 			}
-			metaDataProducer := priorities.NewMetadataFactory(
-				fakelisters.ServiceLister(test.services),
-				fakelisters.ControllerLister(rcs),
-				fakelisters.ReplicaSetLister(rss),
-				fakelisters.StatefulSetLister(sss),
-				1)
-			metaData := metaDataProducer(test.pod, nodes, snapshot)
 			state := framework.NewCycleState()
-			state.Write(migration.PrioritiesStateKey, &migration.PrioritiesStateData{Reference: metaData})
 
 			var gotList framework.NodeScoreList
 			for _, n := range makeLabeledNodeList(test.nodes) {
@@ -508,8 +494,8 @@ func TestPreFilterStateAddRemovePod(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			// getMeta creates predicate meta data given the list of pods.
-			getState := func(pods []*v1.Pod) (*ServiceAffinity, *framework.CycleState, *preFilterState, *nodeinfosnapshot.Snapshot) {
-				snapshot := nodeinfosnapshot.NewSnapshot(nodeinfosnapshot.CreateNodeInfoMap(pods, test.nodes))
+			getState := func(pods []*v1.Pod) (*ServiceAffinity, *framework.CycleState, *preFilterState, *cache.Snapshot) {
+				snapshot := cache.NewSnapshot(pods, test.nodes)
 
 				p := &ServiceAffinity{
 					sharedLister:  snapshot,
@@ -548,7 +534,8 @@ func TestPreFilterStateAddRemovePod(t *testing.T) {
 			plStateOriginal, _ := plState.Clone().(*preFilterState)
 
 			// Add test.addedPod to state1 and verify it is equal to allPodsState.
-			if err := ipa.AddPod(context.Background(), state, test.pendingPod, test.addedPod, snapshot.NodeInfoMap[test.addedPod.Spec.NodeName]); err != nil {
+			nodeInfo := mustGetNodeInfo(t, snapshot, test.addedPod.Spec.NodeName)
+			if err := ipa.AddPod(context.Background(), state, test.pendingPod, test.addedPod, nodeInfo); err != nil {
 				t.Errorf("error adding pod to preFilterState: %v", err)
 			}
 
@@ -557,7 +544,7 @@ func TestPreFilterStateAddRemovePod(t *testing.T) {
 			}
 
 			// Remove the added pod pod and make sure it is equal to the original state.
-			if err := ipa.RemovePod(context.Background(), state, test.pendingPod, test.addedPod, snapshot.NodeInfoMap[test.addedPod.Spec.NodeName]); err != nil {
+			if err := ipa.RemovePod(context.Background(), state, test.pendingPod, test.addedPod, nodeInfo); err != nil {
 				t.Errorf("error removing pod from preFilterState: %v", err)
 			}
 			if !reflect.DeepEqual(sortState(plStateOriginal), sortState(plState)) {
@@ -602,4 +589,31 @@ func sortNodeScoreList(out framework.NodeScoreList) {
 		}
 		return out[i].Score < out[j].Score
 	})
+}
+
+func mustGetNodeInfo(t *testing.T, snapshot *cache.Snapshot, name string) *nodeinfo.NodeInfo {
+	t.Helper()
+	nodeInfo, err := snapshot.NodeInfos().Get(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nodeInfo
+}
+
+func TestPreFilterDisabled(t *testing.T) {
+	pod := &v1.Pod{}
+	nodeInfo := nodeinfo.NewNodeInfo()
+	node := v1.Node{}
+	nodeInfo.SetNode(&node)
+	p := &ServiceAffinity{
+		args: Args{
+			AffinityLabels: []string{"region"},
+		},
+	}
+	cycleState := framework.NewCycleState()
+	gotStatus := p.Filter(context.Background(), cycleState, pod, nodeInfo)
+	wantStatus := framework.NewStatus(framework.Error, `error reading "PreFilterServiceAffinity" from cycleState: not found`)
+	if !reflect.DeepEqual(gotStatus, wantStatus) {
+		t.Errorf("status does not match: %v, want: %v", gotStatus, wantStatus)
+	}
 }

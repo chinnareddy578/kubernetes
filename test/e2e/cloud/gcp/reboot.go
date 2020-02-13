@@ -17,6 +17,7 @@ limitations under the License.
 package gcp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
 	testutils "k8s.io/kubernetes/test/utils"
 
@@ -60,7 +62,7 @@ var _ = SIGDescribe("Reboot [Disruptive] [Feature:Reboot]", func() {
 		// (the limiting factor is the implementation of util.go's e2essh.GetSigner(...)).
 
 		// Cluster must support node reboot
-		framework.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
+		e2eskipper.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
 	})
 
 	ginkgo.AfterEach(func() {
@@ -69,7 +71,7 @@ var _ = SIGDescribe("Reboot [Disruptive] [Feature:Reboot]", func() {
 			// events for the kube-system namespace on failures
 			namespaceName := metav1.NamespaceSystem
 			ginkgo.By(fmt.Sprintf("Collecting events from namespace %q.", namespaceName))
-			events, err := f.ClientSet.CoreV1().Events(namespaceName).List(metav1.ListOptions{})
+			events, err := f.ClientSet.CoreV1().Events(namespaceName).List(context.TODO(), metav1.ListOptions{})
 			framework.ExpectNoError(err)
 
 			for _, e := range events.Items {
@@ -231,7 +233,7 @@ func rebootNode(c clientset.Interface, provider, name, rebootCmd string) bool {
 
 	// Get the node initially.
 	framework.Logf("Getting %s", name)
-	node, err := c.CoreV1().Nodes().Get(name, metav1.GetOptions{})
+	node, err := c.CoreV1().Nodes().Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		framework.Logf("Couldn't get node %s", name)
 		return false

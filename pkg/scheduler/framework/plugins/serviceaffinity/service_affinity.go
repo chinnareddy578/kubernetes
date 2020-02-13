@@ -20,13 +20,10 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	corelisters "k8s.io/client-go/listers/core/v1"
-	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	schedulerlisters "k8s.io/kubernetes/pkg/scheduler/listers"
 	"k8s.io/kubernetes/pkg/scheduler/nodeinfo"
@@ -36,9 +33,12 @@ const (
 	// Name is the name of the plugin used in the plugin registry and configurations.
 	Name = "ServiceAffinity"
 
-	// preFilterStateKey is the key in CycleState to InterPodAffinity pre-computed data.
+	// preFilterStateKey is the key in CycleState to ServiceAffinity pre-computed data.
 	// Using the name of the plugin will likely help us avoid collisions with other plugins.
 	preFilterStateKey = "PreFilter" + Name
+
+	// ErrReason is used for CheckServiceAffinity predicate error.
+	ErrReason = "node(s) didn't match service affinity"
 )
 
 // Args holds the args that are used to configure the plugin.
@@ -113,14 +113,14 @@ func (pl *ServiceAffinity) createPreFilterState(pod *v1.Pod) (*preFilterState, e
 	if err != nil {
 		return nil, fmt.Errorf("listing pod services: %v", err.Error())
 	}
-	selector := predicates.CreateSelectorFromLabels(pod.Labels)
+	selector := createSelectorFromLabels(pod.Labels)
 	allMatches, err := pl.sharedLister.Pods().List(selector)
 	if err != nil {
 		return nil, fmt.Errorf("listing pods: %v", err.Error())
 	}
 
 	// consider only the pods that belong to the same namespace
-	matchingPodList := predicates.FilterPodsByNamespace(allMatches, pod.Namespace)
+	matchingPodList := filterPodsByNamespace(allMatches, pod.Namespace)
 
 	return &preFilterState{
 		matchingPodList:     matchingPodList,
@@ -153,11 +153,11 @@ func (pl *ServiceAffinity) AddPod(ctx context.Context, cycleState *framework.Cyc
 
 	// If addedPod is in the same namespace as the pod, update the list
 	// of matching pods if applicable.
-	if s == nil || podToAdd.Namespace != podToSchedule.Namespace {
+	if podToAdd.Namespace != podToSchedule.Namespace {
 		return nil
 	}
 
-	selector := predicates.CreateSelectorFromLabels(podToSchedule.Labels)
+	selector := createSelectorFromLabels(podToSchedule.Labels)
 	if selector.Matches(labels.Set(podToAdd.Labels)) {
 		s.matchingPodList = append(s.matchingPodList, podToAdd)
 	}
@@ -172,8 +172,7 @@ func (pl *ServiceAffinity) RemovePod(ctx context.Context, cycleState *framework.
 		return framework.NewStatus(framework.Error, err.Error())
 	}
 
-	if s == nil ||
-		len(s.matchingPodList) == 0 ||
+	if len(s.matchingPodList) == 0 ||
 		podToRemove.Namespace != s.matchingPodList[0].Namespace {
 		return nil
 	}
@@ -191,10 +190,8 @@ func (pl *ServiceAffinity) RemovePod(ctx context.Context, cycleState *framework.
 func getPreFilterState(cycleState *framework.CycleState) (*preFilterState, error) {
 	c, err := cycleState.Read(preFilterStateKey)
 	if err != nil {
-		// The metadata wasn't pre-computed in prefilter. We ignore the error for now since
-		// Filter is able to handle that by computing it again.
-		klog.V(5).Infof(fmt.Sprintf("reading %q from cycleState: %v", preFilterStateKey, err))
-		return nil, nil
+		// preFilterState doesn't exist, likely PreFilter wasn't invoked.
+		return nil, fmt.Errorf("error reading %q from cycleState: %v", preFilterStateKey, err)
 	}
 
 	if c == nil {
@@ -246,19 +243,11 @@ func (pl *ServiceAffinity) Filter(ctx context.Context, cycleState *framework.Cyc
 	if err != nil {
 		return framework.NewStatus(framework.Error, err.Error())
 	}
-	if s == nil {
-		// Make the filter resilient in case preFilterState is missing.
-		s, err = pl.createPreFilterState(pod)
-		if err != nil {
-			return framework.NewStatus(framework.Error, fmt.Sprintf("could not create preFilterState: %v", err))
-
-		}
-	}
 
 	pods, services := s.matchingPodList, s.matchingPodServices
 	filteredPods := nodeInfo.FilterOutPods(pods)
 	// check if the pod being scheduled has the affinity labels specified in its NodeSelector
-	affinityLabels := predicates.FindLabelsInSet(pl.args.AffinityLabels, labels.Set(pod.Spec.NodeSelector))
+	affinityLabels := findLabelsInSet(pl.args.AffinityLabels, labels.Set(pod.Spec.NodeSelector))
 	// Step 1: If we don't have all constraints, introspect nodes to find the missing constraints.
 	if len(pl.args.AffinityLabels) > len(affinityLabels) {
 		if len(services) > 0 {
@@ -267,16 +256,16 @@ func (pl *ServiceAffinity) Filter(ctx context.Context, cycleState *framework.Cyc
 				if err != nil {
 					return framework.NewStatus(framework.Error, "node not found")
 				}
-				predicates.AddUnsetLabelsToMap(affinityLabels, pl.args.AffinityLabels, labels.Set(nodeWithAffinityLabels.Node().Labels))
+				addUnsetLabelsToMap(affinityLabels, pl.args.AffinityLabels, labels.Set(nodeWithAffinityLabels.Node().Labels))
 			}
 		}
 	}
 	// Step 2: Finally complete the affinity predicate based on whatever set of predicates we were able to find.
-	if predicates.CreateSelectorFromLabels(affinityLabels).Matches(labels.Set(node.Labels)) {
+	if createSelectorFromLabels(affinityLabels).Matches(labels.Set(node.Labels)) {
 		return nil
 	}
 
-	return migration.PredicateResultToFrameworkStatus([]predicates.PredicateFailureReason{predicates.ErrServiceAffinityViolated}, nil)
+	return framework.NewStatus(framework.Unschedulable, ErrReason)
 }
 
 // Score invoked at the Score extension point.
@@ -389,4 +378,48 @@ func (pl *ServiceAffinity) updateNodeScoresForLabel(sharedLister schedulerlister
 // ScoreExtensions of the Score plugin.
 func (pl *ServiceAffinity) ScoreExtensions() framework.ScoreExtensions {
 	return pl
+}
+
+// addUnsetLabelsToMap backfills missing values with values we find in a map.
+func addUnsetLabelsToMap(aL map[string]string, labelsToAdd []string, labelSet labels.Set) {
+	for _, l := range labelsToAdd {
+		// if the label is already there, dont overwrite it.
+		if _, exists := aL[l]; exists {
+			continue
+		}
+		// otherwise, backfill this label.
+		if labelSet.Has(l) {
+			aL[l] = labelSet.Get(l)
+		}
+	}
+}
+
+// createSelectorFromLabels is used to define a selector that corresponds to the keys in a map.
+func createSelectorFromLabels(aL map[string]string) labels.Selector {
+	if len(aL) == 0 {
+		return labels.Everything()
+	}
+	return labels.Set(aL).AsSelector()
+}
+
+// filterPodsByNamespace filters pods outside a namespace from the given list.
+func filterPodsByNamespace(pods []*v1.Pod, ns string) []*v1.Pod {
+	filtered := []*v1.Pod{}
+	for _, nsPod := range pods {
+		if nsPod.Namespace == ns {
+			filtered = append(filtered, nsPod)
+		}
+	}
+	return filtered
+}
+
+// findLabelsInSet gets as many key/value pairs as possible out of a label set.
+func findLabelsInSet(labelsToKeep []string, selector labels.Set) map[string]string {
+	aL := make(map[string]string)
+	for _, l := range labelsToKeep {
+		if selector.Has(l) {
+			aL[l] = selector.Get(l)
+		}
+	}
+	return aL
 }

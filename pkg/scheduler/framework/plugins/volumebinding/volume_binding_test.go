@@ -24,7 +24,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	volumescheduling "k8s.io/kubernetes/pkg/controller/volume/scheduling"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	"k8s.io/kubernetes/pkg/scheduler/volumebinder"
@@ -73,7 +72,7 @@ func TestVolumeBinding(t *testing.T) {
 				FindUnboundSatsified: false,
 				FindBoundSatsified:   true,
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, predicates.ErrVolumeBindConflict.GetReason()),
+			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonBindConflict),
 		},
 		{
 			name: "bound and unbound unsatisfied",
@@ -83,8 +82,8 @@ func TestVolumeBinding(t *testing.T) {
 				FindUnboundSatsified: false,
 				FindBoundSatsified:   false,
 			},
-			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, predicates.ErrVolumeNodeConflict.GetReason(),
-				predicates.ErrVolumeBindConflict.GetReason()),
+			wantStatus: framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonNodeConflict,
+				ErrReasonBindConflict),
 		},
 		{
 			name: "unbound/found matches/bind succeeds",
@@ -112,8 +111,10 @@ func TestVolumeBinding(t *testing.T) {
 			nodeInfo := schedulernodeinfo.NewNodeInfo()
 			nodeInfo.SetNode(item.node)
 			fakeVolumeBinder := volumebinder.NewFakeVolumeBinder(item.volumeBinderConfig)
-			p := NewFromVolumeBinder(fakeVolumeBinder)
-			gotStatus := p.(framework.FilterPlugin).Filter(context.Background(), nil, item.pod, nodeInfo)
+			p := &VolumeBinding{
+				binder: fakeVolumeBinder,
+			}
+			gotStatus := p.Filter(context.Background(), nil, item.pod, nodeInfo)
 			if !reflect.DeepEqual(gotStatus, item.wantStatus) {
 				t.Errorf("status does not match: %v, want: %v", gotStatus, item.wantStatus)
 			}

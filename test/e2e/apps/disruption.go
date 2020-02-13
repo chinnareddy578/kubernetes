@@ -17,6 +17,7 @@ limitations under the License.
 package apps
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -31,7 +32,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
+	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 )
 
@@ -67,7 +70,7 @@ var _ = SIGDescribe("DisruptionController", func() {
 		// Since disruptionAllowed starts out 0, if we see it ever become positive,
 		// that means the controller is working.
 		err := wait.PollImmediate(framework.Poll, timeout, func() (bool, error) {
-			pdb, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get("foo", metav1.GetOptions{})
+			pdb, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get(context.TODO(), "foo", metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -146,9 +149,16 @@ var _ = SIGDescribe("DisruptionController", func() {
 		if c.shouldDeny {
 			expectation = "should not allow an eviction"
 		}
-		ginkgo.It(fmt.Sprintf("evictions: %s => %s", c.description, expectation), func() {
+		// tests with exclusive set to true relies on HostPort to make sure
+		// only one pod from the replicaset is assigned to each node. This
+		// requires these tests to be run serially.
+		var serial string
+		if c.exclusive {
+			serial = " [Serial]"
+		}
+		ginkgo.It(fmt.Sprintf("evictions: %s => %s%s", c.description, expectation, serial), func() {
 			if c.skipForBigClusters {
-				framework.SkipUnlessNodeCountIsAtMost(bigClusterSize - 1)
+				e2eskipper.SkipUnlessNodeCountIsAtMost(bigClusterSize - 1)
 			}
 			createPodsOrDie(cs, ns, c.podCount)
 			if c.replicaSetSize > 0 {
@@ -221,6 +231,7 @@ var _ = SIGDescribe("DisruptionController", func() {
 
 		ginkgo.By("Trying to evict the same pod we tried earlier which should now be evictable")
 		waitForPodsOrDie(cs, ns, 3)
+		waitForPdbToObserveHealthyPods(cs, ns, 3)
 		err = cs.CoreV1().Pods(ns).Evict(e)
 		framework.ExpectNoError(err) // the eviction is now allowed
 	})
@@ -237,7 +248,7 @@ func createPDBMinAvailableOrDie(cs kubernetes.Interface, ns string, minAvailable
 			MinAvailable: &minAvailable,
 		},
 	}
-	_, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Create(&pdb)
+	_, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Create(context.TODO(), &pdb, metav1.CreateOptions{})
 	framework.ExpectNoError(err, "Waiting for the pdb to be created with minAvailable %d in namespace %s", minAvailable.IntVal, ns)
 	waitForPdbToBeProcessed(cs, ns)
 }
@@ -253,19 +264,19 @@ func createPDBMaxUnavailableOrDie(cs kubernetes.Interface, ns string, maxUnavail
 			MaxUnavailable: &maxUnavailable,
 		},
 	}
-	_, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Create(&pdb)
+	_, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Create(context.TODO(), &pdb, metav1.CreateOptions{})
 	framework.ExpectNoError(err, "Waiting for the pdb to be created with maxUnavailable %d in namespace %s", maxUnavailable.IntVal, ns)
 	waitForPdbToBeProcessed(cs, ns)
 }
 
 func updatePDBMinAvailableOrDie(cs kubernetes.Interface, ns string, minAvailable intstr.IntOrString) {
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		old, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get("foo", metav1.GetOptions{})
+		old, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get(context.TODO(), "foo", metav1.GetOptions{})
 		if err != nil {
 			return err
 		}
 		old.Spec.MinAvailable = &minAvailable
-		if _, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Update(old); err != nil {
+		if _, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Update(context.TODO(), old, metav1.UpdateOptions{}); err != nil {
 			return err
 		}
 		return nil
@@ -294,7 +305,7 @@ func createPodsOrDie(cs kubernetes.Interface, ns string, n int) {
 			},
 		}
 
-		_, err := cs.CoreV1().Pods(ns).Create(pod)
+		_, err := cs.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
 		framework.ExpectNoError(err, "Creating pod %q in namespace %q", pod.Name, ns)
 	}
 }
@@ -302,7 +313,7 @@ func createPodsOrDie(cs kubernetes.Interface, ns string, n int) {
 func waitForPodsOrDie(cs kubernetes.Interface, ns string, n int) {
 	ginkgo.By("Waiting for all pods to be running")
 	err := wait.PollImmediate(framework.Poll, schedulingTimeout, func() (bool, error) {
-		pods, err := cs.CoreV1().Pods(ns).List(metav1.ListOptions{LabelSelector: "foo=bar"})
+		pods, err := cs.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{LabelSelector: "foo=bar"})
 		if err != nil {
 			return false, err
 		}
@@ -314,8 +325,9 @@ func waitForPodsOrDie(cs kubernetes.Interface, ns string, n int) {
 			return false, nil
 		}
 		ready := 0
-		for i := 0; i < n; i++ {
-			if pods.Items[i].Status.Phase == v1.PodRunning {
+		for i := range pods.Items {
+			pod := pods.Items[i]
+			if podutil.IsPodReady(&pod) {
 				ready++
 			}
 		}
@@ -360,21 +372,22 @@ func createReplicaSetOrDie(cs kubernetes.Interface, ns string, size int32, exclu
 		},
 	}
 
-	_, err := cs.AppsV1().ReplicaSets(ns).Create(rs)
+	_, err := cs.AppsV1().ReplicaSets(ns).Create(context.TODO(), rs, metav1.CreateOptions{})
 	framework.ExpectNoError(err, "Creating replica set %q in namespace %q", rs.Name, ns)
 }
 
 func locateRunningPod(cs kubernetes.Interface, ns string) (pod *v1.Pod, err error) {
 	ginkgo.By("locating a running pod")
 	err = wait.PollImmediate(framework.Poll, schedulingTimeout, func() (bool, error) {
-		podList, err := cs.CoreV1().Pods(ns).List(metav1.ListOptions{})
+		podList, err := cs.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{})
 		if err != nil {
 			return false, err
 		}
 
 		for i := range podList.Items {
-			if podList.Items[i].Status.Phase == v1.PodRunning {
-				pod = &podList.Items[i]
+			p := podList.Items[i]
+			if podutil.IsPodReady(&p) {
+				pod = &p
 				return true, nil
 			}
 		}
@@ -387,7 +400,7 @@ func locateRunningPod(cs kubernetes.Interface, ns string) (pod *v1.Pod, err erro
 func waitForPdbToBeProcessed(cs kubernetes.Interface, ns string) {
 	ginkgo.By("Waiting for the pdb to be processed")
 	err := wait.PollImmediate(framework.Poll, schedulingTimeout, func() (bool, error) {
-		pdb, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get("foo", metav1.GetOptions{})
+		pdb, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get(context.TODO(), "foo", metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -397,4 +410,19 @@ func waitForPdbToBeProcessed(cs kubernetes.Interface, ns string) {
 		return true, nil
 	})
 	framework.ExpectNoError(err, "Waiting for the pdb to be processed in namespace %s", ns)
+}
+
+func waitForPdbToObserveHealthyPods(cs kubernetes.Interface, ns string, healthyCount int32) {
+	ginkgo.By("Waiting for the pdb to observed all healthy pods")
+	err := wait.PollImmediate(framework.Poll, wait.ForeverTestTimeout, func() (bool, error) {
+		pdb, err := cs.PolicyV1beta1().PodDisruptionBudgets(ns).Get(context.TODO(), "foo", metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if pdb.Status.CurrentHealthy != healthyCount {
+			return false, nil
+		}
+		return true, nil
+	})
+	framework.ExpectNoError(err, "Waiting for the pdb in namespace %s to observed %d healthy pods", ns, healthyCount)
 }

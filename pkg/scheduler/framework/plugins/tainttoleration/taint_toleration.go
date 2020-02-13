@@ -23,9 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/priorities"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
+	pluginhelper "k8s.io/kubernetes/pkg/scheduler/framework/plugins/helper"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	"k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
@@ -36,14 +34,16 @@ type TaintToleration struct {
 }
 
 var _ framework.FilterPlugin = &TaintToleration{}
-var _ framework.PostFilterPlugin = &TaintToleration{}
+var _ framework.PreScorePlugin = &TaintToleration{}
 var _ framework.ScorePlugin = &TaintToleration{}
 
 const (
 	// Name is the name of the plugin used in the plugin registry and configurations.
 	Name = "TaintToleration"
-	// postFilterStateKey is the key in CycleState to InterPodAffinity pre-computed data for Scoring.
-	postFilterStateKey = "PostFilter" + Name
+	// preScoreStateKey is the key in CycleState to TaintToleration pre-computed data for Scoring.
+	preScoreStateKey = "PreScore" + Name
+	// ErrReasonNotMatch is the Filter reason status when not matching.
+	ErrReasonNotMatch = "node(s) had taints that the pod didn't tolerate"
 )
 
 // Name returns name of the plugin. It is used in logs, etc.
@@ -53,19 +53,38 @@ func (pl *TaintToleration) Name() string {
 
 // Filter invoked at the filter extension point.
 func (pl *TaintToleration) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *nodeinfo.NodeInfo) *framework.Status {
-	// Note that PodToleratesNodeTaints doesn't use predicate metadata, hence passing nil here.
-	_, reasons, err := predicates.PodToleratesNodeTaints(pod, nil, nodeInfo)
-	return migration.PredicateResultToFrameworkStatus(reasons, err)
+	if nodeInfo == nil || nodeInfo.Node() == nil {
+		return framework.NewStatus(framework.Error, "invalid nodeInfo")
+	}
+
+	taints, err := nodeInfo.Taints()
+	if err != nil {
+		return framework.NewStatus(framework.Error, err.Error())
+	}
+
+	filterPredicate := func(t *v1.Taint) bool {
+		// PodToleratesNodeTaints is only interested in NoSchedule and NoExecute taints.
+		return t.Effect == v1.TaintEffectNoSchedule || t.Effect == v1.TaintEffectNoExecute
+	}
+
+	taint, isUntolerated := v1helper.FindMatchingUntoleratedTaint(taints, pod.Spec.Tolerations, filterPredicate)
+	if !isUntolerated {
+		return nil
+	}
+
+	errReason := fmt.Sprintf("node(s) had taint {%s: %s}, that the pod didn't tolerate",
+		taint.Key, taint.Value)
+	return framework.NewStatus(framework.UnschedulableAndUnresolvable, errReason)
 }
 
-// postFilterState computed at PostFilter and used at Score.
-type postFilterState struct {
+// preScoreState computed at PreScore and used at Score.
+type preScoreState struct {
 	tolerationsPreferNoSchedule []v1.Toleration
 }
 
 // Clone implements the mandatory Clone interface. We don't really copy the data since
 // there is no need for that.
-func (s *postFilterState) Clone() framework.StateData {
+func (s *preScoreState) Clone() framework.StateData {
 	return s
 }
 
@@ -80,28 +99,28 @@ func getAllTolerationPreferNoSchedule(tolerations []v1.Toleration) (tolerationLi
 	return
 }
 
-// PostFilter builds and writes cycle state used by Score and NormalizeScore.
-func (pl *TaintToleration) PostFilter(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*v1.Node, _ framework.NodeToStatusMap) *framework.Status {
+// PreScore builds and writes cycle state used by Score and NormalizeScore.
+func (pl *TaintToleration) PreScore(ctx context.Context, cycleState *framework.CycleState, pod *v1.Pod, nodes []*v1.Node, _ framework.NodeToStatusMap) *framework.Status {
 	if len(nodes) == 0 {
 		return nil
 	}
 	tolerationsPreferNoSchedule := getAllTolerationPreferNoSchedule(pod.Spec.Tolerations)
-	state := &postFilterState{
+	state := &preScoreState{
 		tolerationsPreferNoSchedule: tolerationsPreferNoSchedule,
 	}
-	cycleState.Write(postFilterStateKey, state)
+	cycleState.Write(preScoreStateKey, state)
 	return nil
 }
 
-func getPostFilterState(cycleState *framework.CycleState) (*postFilterState, error) {
-	c, err := cycleState.Read(postFilterStateKey)
+func getPreScoreState(cycleState *framework.CycleState) (*preScoreState, error) {
+	c, err := cycleState.Read(preScoreStateKey)
 	if err != nil {
-		return nil, fmt.Errorf("Error reading %q from cycleState: %v", postFilterStateKey, err)
+		return nil, fmt.Errorf("Error reading %q from cycleState: %v", preScoreStateKey, err)
 	}
 
-	s, ok := c.(*postFilterState)
+	s, ok := c.(*preScoreState)
 	if !ok {
-		return nil, fmt.Errorf("%+v convert to tainttoleration.postFilterState error", c)
+		return nil, fmt.Errorf("%+v convert to tainttoleration.preScoreState error", c)
 	}
 	return s, nil
 }
@@ -129,7 +148,7 @@ func (pl *TaintToleration) Score(ctx context.Context, state *framework.CycleStat
 	}
 	node := nodeInfo.Node()
 
-	s, err := getPostFilterState(state)
+	s, err := getPreScoreState(state)
 	if err != nil {
 		return 0, framework.NewStatus(framework.Error, err.Error())
 	}
@@ -140,10 +159,7 @@ func (pl *TaintToleration) Score(ctx context.Context, state *framework.CycleStat
 
 // NormalizeScore invoked after scoring all nodes.
 func (pl *TaintToleration) NormalizeScore(ctx context.Context, _ *framework.CycleState, pod *v1.Pod, scores framework.NodeScoreList) *framework.Status {
-	// Note that ComputeTaintTolerationPriorityReduce doesn't use priority metadata, hence passing nil here.
-	normalizeFun := priorities.NormalizeReduce(framework.MaxNodeScore, true)
-	err := normalizeFun(pod, nil, pl.handle.SnapshotSharedLister(), scores)
-	return migration.ErrorToFrameworkStatus(err)
+	return pluginhelper.DefaultNormalizeScore(framework.MaxNodeScore, true, scores)
 }
 
 // ScoreExtensions of the Score plugin.

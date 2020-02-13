@@ -55,7 +55,6 @@ import (
 	"k8s.io/kubernetes/cmd/kube-scheduler/app/options"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/scheduler"
-	"k8s.io/kubernetes/pkg/scheduler/algorithmprovider"
 	kubeschedulerconfig "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	"k8s.io/kubernetes/pkg/scheduler/metrics"
@@ -81,7 +80,8 @@ and capacity. The scheduler needs to take into account individual and collective
 resource requirements, quality of service requirements, hardware/software/policy
 constraints, affinity and anti-affinity specifications, data locality, inter-workload
 interference, deadlines, and so on. Workload-specific requirements will be exposed
-through the API as necessary.`,
+through the API as necessary. See [scheduling](https://kubernetes.io/docs/concepts/scheduling/)
+for more information about scheduling and the kube-scheduler component.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			if err := runCommand(cmd, args, opts, registryOptions...); err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -145,10 +145,6 @@ func runCommand(cmd *cobra.Command, args []string, opts *options.Options, regist
 
 	// Get the completed config
 	cc := c.Complete()
-
-	// Apply algorithms based on feature gates.
-	// TODO: make configurable?
-	algorithmprovider.ApplyFeatureGates()
 
 	// Configz registration.
 	if cz, err := configz.New("componentconfig"); err == nil {
@@ -335,7 +331,7 @@ func newHealthzHandler(config *kubeschedulerconfig.KubeSchedulerConfiguration, s
 	return pathRecorderMux
 }
 
-// WithPlugin creates an Option based on plugin name and factory.
+// WithPlugin creates an Option based on plugin name and factory. This function is used to register out-of-tree plugins.
 func WithPlugin(name string, factory framework.PluginFactory) Option {
 	return func(registry framework.Registry) error {
 		return registry.Register(name, factory)

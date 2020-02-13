@@ -17,13 +17,16 @@ limitations under the License.
 package network
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 
 	"github.com/onsi/ginkgo"
 )
@@ -55,7 +58,7 @@ var _ = SIGDescribe("DNS configMap federations [Feature:Federation]", func() {
 func (t *dnsFederationsConfigMapTest) run() {
 	t.init()
 
-	defer t.c.CoreV1().ConfigMaps(t.ns).Delete(t.name, nil)
+	defer t.c.CoreV1().ConfigMaps(t.ns).Delete(context.TODO(), t.name, nil)
 	t.createUtilPodLabel("e2e-dns-configmap")
 	defer t.deleteUtilPod()
 	originalConfigMapData := t.fetchDNSConfigMapData()
@@ -411,19 +414,19 @@ func (t *dnsExternalNameTest) run(isIPv6 bool) {
 	f := t.f
 	serviceName := "dns-externalname-upstream-test"
 	externalNameService := e2eservice.CreateServiceSpec(serviceName, googleDNSHostname, false, nil)
-	if _, err := f.ClientSet.CoreV1().Services(f.Namespace.Name).Create(externalNameService); err != nil {
+	if _, err := f.ClientSet.CoreV1().Services(f.Namespace.Name).Create(context.TODO(), externalNameService, metav1.CreateOptions{}); err != nil {
 		ginkgo.Fail(fmt.Sprintf("ginkgo.Failed when creating service: %v", err))
 	}
 	serviceNameLocal := "dns-externalname-upstream-local"
 	externalNameServiceLocal := e2eservice.CreateServiceSpec(serviceNameLocal, fooHostname, false, nil)
-	if _, err := f.ClientSet.CoreV1().Services(f.Namespace.Name).Create(externalNameServiceLocal); err != nil {
+	if _, err := f.ClientSet.CoreV1().Services(f.Namespace.Name).Create(context.TODO(), externalNameServiceLocal, metav1.CreateOptions{}); err != nil {
 		ginkgo.Fail(fmt.Sprintf("ginkgo.Failed when creating service: %v", err))
 	}
 	defer func() {
 		ginkgo.By("deleting the test externalName service")
 		defer ginkgo.GinkgoRecover()
-		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(externalNameService.Name, nil)
-		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(externalNameServiceLocal.Name, nil)
+		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(context.TODO(), externalNameService.Name, nil)
+		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(context.TODO(), externalNameServiceLocal.Name, nil)
 	}()
 
 	if isIPv6 {
@@ -520,7 +523,7 @@ var _ = SIGDescribe("DNS configMap nameserver [Feature:Networking-IPv6] [LinuxOn
 
 	ginkgo.BeforeEach(func() {
 		// IPv6 is not supported on Windows.
-		framework.SkipIfNodeOSDistroIs("windows")
+		e2eskipper.SkipIfNodeOSDistroIs("windows")
 	})
 
 	ginkgo.Context("Change stubDomain", func() {

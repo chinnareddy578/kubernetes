@@ -22,9 +22,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
-	"k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 )
 
@@ -34,25 +32,25 @@ type ResourceLimits struct {
 	handle framework.FrameworkHandle
 }
 
-var _ = framework.PostFilterPlugin(&ResourceLimits{})
+var _ = framework.PreScorePlugin(&ResourceLimits{})
 var _ = framework.ScorePlugin(&ResourceLimits{})
 
 const (
 	// ResourceLimitsName is the name of the plugin used in the plugin registry and configurations.
 	ResourceLimitsName = "NodeResourceLimits"
 
-	// postFilterStateKey is the key in CycleState to InterPodAffinity pre-computed data.
+	// preScoreStateKey is the key in CycleState to NodeResourceLimits pre-computed data.
 	// Using the name of the plugin will likely help us avoid collisions with other plugins.
-	postFilterStateKey = "PostFilter" + ResourceLimitsName
+	preScoreStateKey = "PreScore" + ResourceLimitsName
 )
 
-// postFilterState computed at PostFilter and used at Score.
-type postFilterState struct {
+// preScoreState computed at PreScore and used at Score.
+type preScoreState struct {
 	podResourceRequest *schedulernodeinfo.Resource
 }
 
-// Clone the postFilter state.
-func (s *postFilterState) Clone() framework.StateData {
+// Clone the preScore state.
+func (s *preScoreState) Clone() framework.StateData {
 	return s
 }
 
@@ -61,8 +59,8 @@ func (rl *ResourceLimits) Name() string {
 	return ResourceLimitsName
 }
 
-// PostFilter builds and writes cycle state used by Score and NormalizeScore.
-func (rl *ResourceLimits) PostFilter(
+// PreScore builds and writes cycle state used by Score and NormalizeScore.
+func (rl *ResourceLimits) PreScore(
 	pCtx context.Context,
 	cycleState *framework.CycleState,
 	pod *v1.Pod,
@@ -77,23 +75,22 @@ func (rl *ResourceLimits) PostFilter(
 	if rl.handle.SnapshotSharedLister() == nil {
 		return framework.NewStatus(framework.Error, fmt.Sprintf("empty shared lister"))
 	}
-	s := &postFilterState{
+	s := &preScoreState{
 		podResourceRequest: getResourceLimits(pod),
 	}
-	cycleState.Write(postFilterStateKey, s)
+	cycleState.Write(preScoreStateKey, s)
 	return nil
 }
 
-func getPodResource(cycleState *framework.CycleState) (*nodeinfo.Resource, error) {
-	c, err := cycleState.Read(postFilterStateKey)
+func getPodResource(cycleState *framework.CycleState) (*schedulernodeinfo.Resource, error) {
+	c, err := cycleState.Read(preScoreStateKey)
 	if err != nil {
-		klog.V(5).Infof("Error reading %q from cycleState: %v", postFilterStateKey, err)
-		return nil, nil
+		return nil, fmt.Errorf("Error reading %q from cycleState: %v", preScoreStateKey, err)
 	}
 
-	s, ok := c.(*postFilterState)
+	s, ok := c.(*preScoreState)
 	if !ok {
-		return nil, fmt.Errorf("%+v  convert to ResourceLimits.postFilterState error", c)
+		return nil, fmt.Errorf("%+v  convert to ResourceLimits.preScoreState error", c)
 	}
 	return s.podResourceRequest, nil
 }

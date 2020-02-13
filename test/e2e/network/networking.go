@@ -17,6 +17,7 @@ limitations under the License.
 package network
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -30,6 +31,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enetwork "k8s.io/kubernetes/test/e2e/framework/network"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
 
 	"github.com/onsi/ginkgo"
@@ -67,7 +69,7 @@ func checkConnectivityToHost(f *framework.Framework, nodeName, podName, host str
 		},
 	}
 	podClient := f.ClientSet.CoreV1().Pods(f.Namespace.Name)
-	_, err := podClient.Create(pod)
+	_, err := podClient.Create(context.TODO(), pod, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
@@ -111,7 +113,7 @@ var _ = SIGDescribe("Networking", func() {
 
 	ginkgo.It("should provide Internet connection for containers [Feature:Networking-IPv6][Experimental][LinuxOnly]", func() {
 		// IPv6 is not supported on Windows.
-		framework.SkipIfNodeOSDistroIs("windows")
+		e2eskipper.SkipIfNodeOSDistroIs("windows")
 		ginkgo.By("Running container which tries to connect to 2001:4860:4860::8888")
 		framework.ExpectNoError(
 			checkConnectivityToHost(f, "", "connectivity-test", "2001:4860:4860::8888", 53, 30))
@@ -137,7 +139,7 @@ var _ = SIGDescribe("Networking", func() {
 			ginkgo.By(fmt.Sprintf("testing: %s", test.path))
 			data, err := f.ClientSet.CoreV1().RESTClient().Get().
 				AbsPath(test.path).
-				DoRaw()
+				DoRaw(context.TODO())
 			if err != nil {
 				framework.Failf("ginkgo.Failed: %v\nBody: %s", err, string(data))
 			}
@@ -311,8 +313,8 @@ var _ = SIGDescribe("Networking", func() {
 	})
 
 	ginkgo.It("should recreate its iptables rules if they are deleted [Disruptive]", func() {
-		framework.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		hosts, err := e2essh.NodeSSHHosts(f.ClientSet)
 		framework.ExpectNoError(err, "failed to find external/internal IPs for every node")

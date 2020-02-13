@@ -17,6 +17,7 @@ limitations under the License.
 package apimachinery
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -392,7 +393,7 @@ var _ = SIGDescribe("CustomResourcePublishOpenAPI [Privileged:ClusterAdmin]", fu
 			{"op":"test","path":"/spec/versions/1/name","value":"v3"},
 			{"op": "replace", "path": "/spec/versions/1/name", "value": "v4"}
 		]`)
-		crdMultiVer.Crd, err = crdMultiVer.APIExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Patch(crdMultiVer.Crd.Name, types.JSONPatchType, patch)
+		crdMultiVer.Crd, err = crdMultiVer.APIExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Patch(context.TODO(), crdMultiVer.Crd.Name, types.JSONPatchType, patch, metav1.PatchOptions{})
 		if err != nil {
 			framework.Failf("%v", err)
 		}
@@ -440,12 +441,12 @@ var _ = SIGDescribe("CustomResourcePublishOpenAPI [Privileged:ClusterAdmin]", fu
 		}
 
 		ginkgo.By("mark a version not serverd")
-		crd.Crd, err = crd.APIExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Get(crd.Crd.Name, metav1.GetOptions{})
+		crd.Crd, err = crd.APIExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Get(context.TODO(), crd.Crd.Name, metav1.GetOptions{})
 		if err != nil {
 			framework.Failf("%v", err)
 		}
 		crd.Crd.Spec.Versions[1].Served = false
-		crd.Crd, err = crd.APIExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Update(crd.Crd)
+		crd.Crd, err = crd.APIExtensionClient.ApiextensionsV1().CustomResourceDefinitions().Update(context.TODO(), crd.Crd, metav1.UpdateOptions{})
 		if err != nil {
 			framework.Failf("%v", err)
 		}
@@ -596,12 +597,12 @@ func waitForDefinitionCleanup(c k8sclientset.Interface, name string) error {
 }
 
 func waitForOpenAPISchema(c k8sclientset.Interface, pred func(*spec.Swagger) (bool, string)) error {
-	client := c.CoreV1().RESTClient().(*rest.RESTClient).Client
-	url := c.CoreV1().RESTClient().Get().AbsPath("openapi", "v2").URL()
+	client := c.Discovery().RESTClient().(*rest.RESTClient).Client
+	url := c.Discovery().RESTClient().Get().AbsPath("openapi", "v2").URL()
 	lastMsg := ""
 	etag := ""
 	var etagSpec *spec.Swagger
-	if err := wait.Poll(500*time.Millisecond, wait.ForeverTestTimeout, mustSucceedMultipleTimes(waitSuccessThreshold, func() (bool, error) {
+	if err := wait.Poll(500*time.Millisecond, 60*time.Second, mustSucceedMultipleTimes(waitSuccessThreshold, func() (bool, error) {
 		// download spec with etag support
 		spec := &spec.Swagger{}
 		req, err := http.NewRequest("GET", url.String(), nil)

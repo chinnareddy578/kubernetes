@@ -393,7 +393,6 @@ func (m *ManagerImpl) Allocate(node *schedulernodeinfo.NodeInfo, attrs *lifecycl
 func (m *ManagerImpl) Register(ctx context.Context, r *pluginapi.RegisterRequest) (*pluginapi.Empty, error) {
 	klog.Infof("Got registration request from device plugin with resource name %q", r.ResourceName)
 	metrics.DevicePluginRegistrationCount.WithLabelValues(r.ResourceName).Inc()
-	metrics.DeprecatedDevicePluginRegistrationCount.WithLabelValues(r.ResourceName).Inc()
 	var versionCompatible bool
 	for _, v := range pluginapi.SupportedVersions {
 		if r.Version == v {
@@ -598,9 +597,9 @@ func (m *ManagerImpl) readCheckpoint() error {
 	return nil
 }
 
-// updateAllocatedDevices gets a list of active pods and then frees any Devices that are bound to
-// terminated pods. Returns error on failure.
-func (m *ManagerImpl) updateAllocatedDevices(activePods []*v1.Pod) {
+// UpdateAllocatedDevices frees any Devices that are bound to terminated pods.
+func (m *ManagerImpl) UpdateAllocatedDevices() {
+	activePods := m.activePods()
 	if !m.sourcesReady.AllReady() {
 		return
 	}
@@ -774,7 +773,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 		// Updates allocatedDevices to garbage collect any stranded resources
 		// before doing the device plugin allocation.
 		if !allocatedDevicesUpdated {
-			m.updateAllocatedDevices(m.activePods())
+			m.UpdateAllocatedDevices()
 			allocatedDevicesUpdated = true
 		}
 		allocDevices, err := m.devicesToAllocate(podUID, contName, resource, needed, devicesToReuse[resource])
@@ -789,7 +788,7 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 		// Manager.Allocate involves RPC calls to device plugin, which
 		// could be heavy-weight. Therefore we want to perform this operation outside
 		// mutex lock. Note if Allocate call fails, we may leave container resources
-		// partially allocated for the failed container. We rely on updateAllocatedDevices()
+		// partially allocated for the failed container. We rely on UpdateAllocatedDevices()
 		// to garbage collect these resources later. Another side effect is that if
 		// we have X resource A and Y resource B in total, and two containers, container1
 		// and container2 both require X resource A and Y resource B. Both allocation
@@ -814,7 +813,6 @@ func (m *ManagerImpl) allocateContainerResources(pod *v1.Pod, container *v1.Cont
 		klog.V(3).Infof("Making allocation request for devices %v for device plugin %s", devs, resource)
 		resp, err := eI.e.allocate(devs)
 		metrics.DevicePluginAllocationDuration.WithLabelValues(resource).Observe(metrics.SinceInSeconds(startRPCTime))
-		metrics.DeprecatedDevicePluginAllocationLatency.WithLabelValues(resource).Observe(metrics.SinceInMicroseconds(startRPCTime))
 		if err != nil {
 			// In case of allocation failure, we want to restore m.allocatedDevices
 			// to the actual allocated state from m.podDevices.

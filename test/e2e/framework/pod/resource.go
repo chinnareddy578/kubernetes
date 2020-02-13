@@ -86,7 +86,7 @@ func NewProxyResponseChecker(c clientset.Interface, ns string, label labels.Sele
 func (r ProxyResponseChecker) CheckAllResponses() (done bool, err error) {
 	successes := 0
 	options := metav1.ListOptions{LabelSelector: r.label.String()}
-	currentPods, err := r.c.CoreV1().Pods(r.ns).List(options)
+	currentPods, err := r.c.CoreV1().Pods(r.ns).List(context.TODO(), options)
 	expectNoError(err, "Failed to get list of currentPods in namespace: %s", r.ns)
 	for i, pod := range r.pods.Items {
 		// Check that the replica list remains unchanged, otherwise we have problems.
@@ -98,12 +98,11 @@ func (r ProxyResponseChecker) CheckAllResponses() (done bool, err error) {
 		defer cancel()
 
 		body, err := r.c.CoreV1().RESTClient().Get().
-			Context(ctx).
 			Namespace(r.ns).
 			Resource("pods").
 			SubResource("proxy").
 			Name(string(pod.Name)).
-			Do().
+			Do(ctx).
 			Raw()
 
 		if err != nil {
@@ -148,7 +147,7 @@ func (r ProxyResponseChecker) CheckAllResponses() (done bool, err error) {
 
 func podRunning(c clientset.Interface, podName, namespace string) wait.ConditionFunc {
 	return func() (bool, error) {
-		pod, err := c.CoreV1().Pods(namespace).Get(podName, metav1.GetOptions{})
+		pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -164,7 +163,7 @@ func podRunning(c clientset.Interface, podName, namespace string) wait.Condition
 
 func podCompleted(c clientset.Interface, podName, namespace string) wait.ConditionFunc {
 	return func() (bool, error) {
-		pod, err := c.CoreV1().Pods(namespace).Get(podName, metav1.GetOptions{})
+		pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -178,23 +177,26 @@ func podCompleted(c clientset.Interface, podName, namespace string) wait.Conditi
 
 func podRunningAndReady(c clientset.Interface, podName, namespace string) wait.ConditionFunc {
 	return func() (bool, error) {
-		pod, err := c.CoreV1().Pods(namespace).Get(podName, metav1.GetOptions{})
+		pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
 		switch pod.Status.Phase {
 		case v1.PodFailed, v1.PodSucceeded:
+			e2elog.Logf("The status of Pod %s is %s which is unexpected", podName, pod.Status.Phase)
 			return false, conditions.ErrPodCompleted
 		case v1.PodRunning:
+			e2elog.Logf("The status of Pod %s is %s (Ready = %v)", podName, pod.Status.Phase, podutil.IsPodReady(pod))
 			return podutil.IsPodReady(pod), nil
 		}
+		e2elog.Logf("The status of Pod %s is %s, waiting for it to be Running (with Ready = true)", podName, pod.Status.Phase)
 		return false, nil
 	}
 }
 
 func podNotPending(c clientset.Interface, podName, namespace string) wait.ConditionFunc {
 	return func() (bool, error) {
-		pod, err := c.CoreV1().Pods(namespace).Get(podName, metav1.GetOptions{})
+		pod, err := c.CoreV1().Pods(namespace).Get(context.TODO(), podName, metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
@@ -220,7 +222,7 @@ func PodsCreatedByLabel(c clientset.Interface, ns, name string, replicas int32, 
 		options := metav1.ListOptions{LabelSelector: label.String()}
 
 		// List the pods, making sure we observe all the replicas.
-		pods, err := c.CoreV1().Pods(ns).List(options)
+		pods, err := c.CoreV1().Pods(ns).List(context.TODO(), options)
 		if err != nil {
 			return nil, err
 		}
@@ -348,7 +350,7 @@ func logPodTerminationMessages(pods []v1.Pod) {
 
 // DumpAllPodInfoForNamespace logs all pod information for a given namespace.
 func DumpAllPodInfoForNamespace(c clientset.Interface, namespace string) {
-	pods, err := c.CoreV1().Pods(namespace).List(metav1.ListOptions{})
+	pods, err := c.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		e2elog.Logf("unable to fetch pod debug info: %v", err)
 	}
@@ -434,10 +436,10 @@ func CreateExecPodOrFail(client clientset.Interface, ns, generateName string, tw
 	if tweak != nil {
 		tweak(pod)
 	}
-	execPod, err := client.CoreV1().Pods(ns).Create(pod)
+	execPod, err := client.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
 	expectNoError(err, "failed to create new exec pod in namespace: %s", ns)
 	err = wait.PollImmediate(poll, 5*time.Minute, func() (bool, error) {
-		retrievedPod, err := client.CoreV1().Pods(execPod.Namespace).Get(execPod.Name, metav1.GetOptions{})
+		retrievedPod, err := client.CoreV1().Pods(execPod.Namespace).Get(context.TODO(), execPod.Name, metav1.GetOptions{})
 		if err != nil {
 			if testutils.IsRetryableAPIError(err) {
 				return false, nil
@@ -495,7 +497,6 @@ func checkPodsCondition(c clientset.Interface, ns string, podNames []string, tim
 }
 
 // GetPodLogs returns the logs of the specified container (namespace/pod/container).
-// TODO(random-liu): Change this to be a member function of the framework.
 func GetPodLogs(c clientset.Interface, namespace, podName, containerName string) (string, error) {
 	return getPodLogsInternal(c, namespace, podName, containerName, false)
 }
@@ -514,12 +515,12 @@ func getPodLogsInternal(c clientset.Interface, namespace, podName, containerName
 		Name(podName).SubResource("log").
 		Param("container", containerName).
 		Param("previous", strconv.FormatBool(previous)).
-		Do().
+		Do(context.TODO()).
 		Raw()
 	if err != nil {
 		return "", err
 	}
-	if err == nil && strings.Contains(string(logs), "Internal Error") {
+	if strings.Contains(string(logs), "Internal Error") {
 		return "", fmt.Errorf("Fetched log contains \"Internal Error\": %q", string(logs))
 	}
 	return string(logs), err
@@ -527,7 +528,7 @@ func getPodLogsInternal(c clientset.Interface, namespace, podName, containerName
 
 // GetPodsInNamespace returns the pods in the given namespace.
 func GetPodsInNamespace(c clientset.Interface, ns string, ignoreLabels map[string]string) ([]*v1.Pod, error) {
-	pods, err := c.CoreV1().Pods(ns).List(metav1.ListOptions{})
+	pods, err := c.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return []*v1.Pod{}, err
 	}

@@ -36,8 +36,6 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/kubernetes/pkg/api/v1/pod"
-	priorityutil "k8s.io/kubernetes/pkg/scheduler/algorithm/priorities/util"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	"k8s.io/kubernetes/pkg/scheduler/internal/heap"
 	"k8s.io/kubernetes/pkg/scheduler/metrics"
@@ -197,17 +195,6 @@ func newPodInfoNoTimestamp(pod *v1.Pod) *framework.PodInfo {
 	}
 }
 
-// activeQComp is the function used by the activeQ heap algorithm to sort pods.
-// It sorts pods based on their priority. When priorities are equal, it uses
-// PodInfo.timestamp.
-func activeQComp(podInfo1, podInfo2 interface{}) bool {
-	pInfo1 := podInfo1.(*framework.PodInfo)
-	pInfo2 := podInfo2.(*framework.PodInfo)
-	prio1 := pod.GetPodPriority(pInfo1.Pod)
-	prio2 := pod.GetPodPriority(pInfo2.Pod)
-	return (prio1 > prio2) || (prio1 == prio2 && pInfo1.Timestamp.Before(pInfo2.Timestamp))
-}
-
 // NewPriorityQueue creates a PriorityQueue object.
 func NewPriorityQueue(
 	fwk framework.Framework,
@@ -218,22 +205,16 @@ func NewPriorityQueue(
 		opt(&options)
 	}
 
-	comp := activeQComp
-	if fwk != nil {
-		if queueSortFunc := fwk.QueueSortFunc(); queueSortFunc != nil {
-			comp = func(podInfo1, podInfo2 interface{}) bool {
-				pInfo1 := podInfo1.(*framework.PodInfo)
-				pInfo2 := podInfo2.(*framework.PodInfo)
-
-				return queueSortFunc(pInfo1, pInfo2)
-			}
-		}
+	comp := func(podInfo1, podInfo2 interface{}) bool {
+		pInfo1 := podInfo1.(*framework.PodInfo)
+		pInfo2 := podInfo2.(*framework.PodInfo)
+		return fwk.QueueSortFunc()(pInfo1, pInfo2)
 	}
 
 	pq := &PriorityQueue{
 		clock:            options.clock,
 		stop:             make(chan struct{}),
-		podBackoff:       NewPodBackoffMap(options.podInitialBackoffDuration, options.podMaxBackoffDuration),
+		podBackoff:       NewPodBackoffMap(options.podInitialBackoffDuration, options.podMaxBackoffDuration, options.clock),
 		activeQ:          heap.NewWithRecorder(podInfoKeyFunc, comp, metrics.NewActivePodsRecorder()),
 		unschedulableQ:   newUnschedulablePodsMap(metrics.NewUnschedulablePodsRecorder()),
 		nominatedPods:    newNominatedPodMap(),
@@ -393,7 +374,7 @@ func (p *PriorityQueue) flushBackoffQCompleted() {
 	}
 }
 
-// flushUnschedulableQLeftover moves pod which stays in unschedulableQ longer than the durationStayUnschedulableQ
+// flushUnschedulableQLeftover moves pod which stays in unschedulableQ longer than the unschedulableQTimeInterval
 // to activeQ.
 func (p *PriorityQueue) flushUnschedulableQLeftover() {
 	p.lock.Lock()
@@ -537,8 +518,8 @@ func (p *PriorityQueue) AssignedPodUpdated(pod *v1.Pod) {
 	p.lock.Unlock()
 }
 
-// MoveAllToActiveOrBackoffQueue moves all pods from unschedulableQ to activeQ. This
-// function adds all pods and then signals the condition variable to ensure that
+// MoveAllToActiveOrBackoffQueue moves all pods from unschedulableQ to activeQ or backoffQ.
+// This function adds all pods and then signals the condition variable to ensure that
 // if Pop() is waiting for an item, it receives it after all the pods are in the
 // queue and the head is the highest priority pod.
 func (p *PriorityQueue) MoveAllToActiveOrBackoffQueue(event string) {
@@ -588,12 +569,12 @@ func (p *PriorityQueue) getUnschedulablePodsWithMatchingAffinityTerm(pod *v1.Pod
 		if affinity != nil && affinity.PodAffinity != nil {
 			terms := util.GetPodAffinityTerms(affinity.PodAffinity)
 			for _, term := range terms {
-				namespaces := priorityutil.GetNamespacesFromPodAffinityTerm(up, &term)
+				namespaces := util.GetNamespacesFromPodAffinityTerm(up, &term)
 				selector, err := metav1.LabelSelectorAsSelector(term.LabelSelector)
 				if err != nil {
 					klog.Errorf("Error getting label selectors for pod: %v.", up.Name)
 				}
-				if priorityutil.PodMatchesTermsNamespaceAndSelector(pod, namespaces, selector) {
+				if util.PodMatchesTermsNamespaceAndSelector(pod, namespaces, selector) {
 					podsToMove = append(podsToMove, pInfo)
 					break
 				}

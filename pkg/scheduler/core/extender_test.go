@@ -33,13 +33,14 @@ import (
 	"k8s.io/client-go/informers"
 	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/priorities"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	extenderv1 "k8s.io/kubernetes/pkg/scheduler/apis/extender/v1"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
+	"k8s.io/kubernetes/pkg/scheduler/listers"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	"k8s.io/kubernetes/pkg/scheduler/util"
@@ -160,7 +161,7 @@ func (f *FakeExtender) SupportsPreemption() bool {
 func (f *FakeExtender) ProcessPreemption(
 	pod *v1.Pod,
 	nodeToVictims map[*v1.Node]*extenderv1.Victims,
-	nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo,
+	nodeInfos listers.NodeInfoLister,
 ) (map[*v1.Node]*extenderv1.Victims, error) {
 	nodeToVictimsCopy := map[*v1.Node]*extenderv1.Victims{}
 	// We don't want to change the original nodeToVictims
@@ -174,7 +175,7 @@ func (f *FakeExtender) ProcessPreemption(
 
 	for node, victims := range nodeToVictimsCopy {
 		// Try to do preemption on extender side.
-		extenderVictimPods, extendernPDBViolations, fits, err := f.selectVictimsOnNodeByExtender(pod, node, nodeNameToInfo)
+		extenderVictimPods, extendernPDBViolations, fits, err := f.selectVictimsOnNodeByExtender(pod, node)
 		if err != nil {
 			return nil, err
 		}
@@ -196,11 +197,7 @@ func (f *FakeExtender) ProcessPreemption(
 // 1. More victim pods (if any) amended by preemption phase of extender.
 // 2. Number of violating victim (used to calculate PDB).
 // 3. Fits or not after preemption phase on extender's side.
-func (f *FakeExtender) selectVictimsOnNodeByExtender(
-	pod *v1.Pod,
-	node *v1.Node,
-	nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo,
-) ([]*v1.Pod, int, bool, error) {
+func (f *FakeExtender) selectVictimsOnNodeByExtender(pod *v1.Pod, node *v1.Node) ([]*v1.Pod, int, bool, error) {
 	// If a extender support preemption but have no cached node info, let's run filter to make sure
 	// default scheduler's decision still stand with given pod and node.
 	if !f.nodeCacheCapable {
@@ -288,7 +285,7 @@ func (f *FakeExtender) runPredicate(pod *v1.Pod, node *v1.Node) (bool, error) {
 	return fits, nil
 }
 
-func (f *FakeExtender) Filter(pod *v1.Pod, nodes []*v1.Node, nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo) ([]*v1.Node, extenderv1.FailedNodesMap, error) {
+func (f *FakeExtender) Filter(pod *v1.Pod, nodes []*v1.Node) ([]*v1.Node, extenderv1.FailedNodesMap, error) {
 	filtered := []*v1.Node{}
 	failedNodesMap := extenderv1.FailedNodesMap{}
 	for _, node := range nodes {
@@ -356,7 +353,7 @@ func (f *FakeExtender) IsInterested(pod *v1.Pod) bool {
 	return !f.unInterested
 }
 
-var _ algorithm.SchedulerExtender = &FakeExtender{}
+var _ SchedulerExtender = &FakeExtender{}
 
 func TestGenericSchedulerWithExtenders(t *testing.T) {
 	tests := []struct {
@@ -370,6 +367,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 		{
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -386,6 +385,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 		{
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -402,6 +403,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 		{
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -422,6 +425,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 		{
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -438,6 +443,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 		{
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -457,6 +464,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 		{
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -482,6 +491,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
 				st.RegisterScorePlugin("Machine2Prioritizer", newMachine2PrioritizerPlugin(), 20),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -509,6 +520,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
 				st.RegisterScorePlugin("Machine2Prioritizer", newMachine2PrioritizerPlugin(), 1),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -534,6 +547,8 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			// because of the errors from errorPredicateExtender.
 			registerPlugins: []st.RegisterPluginFunc{
 				st.RegisterFilterPlugin("TrueFilter", NewTrueFilterPlugin),
+				st.RegisterQueueSortPlugin(queuesort.Name, queuesort.New),
+				st.RegisterBindPlugin(defaultbinder.Name, defaultbinder.New),
 			},
 			extenders: []FakeExtender{
 				{
@@ -560,7 +575,7 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			client := clientsetfake.NewSimpleClientset()
 			informerFactory := informers.NewSharedInformerFactory(client, 0)
 
-			extenders := []algorithm.SchedulerExtender{}
+			extenders := []SchedulerExtender{}
 			for ii := range test.extenders {
 				extenders = append(extenders, &test.extenders[ii])
 			}
@@ -570,22 +585,14 @@ func TestGenericSchedulerWithExtenders(t *testing.T) {
 			}
 			queue := internalqueue.NewSchedulingQueue(nil)
 
-			registry := framework.Registry{}
-			plugins := &schedulerapi.Plugins{
-				Filter: &schedulerapi.PluginSet{},
-				Score:  &schedulerapi.PluginSet{},
+			fwk, err := st.NewFramework(test.registerPlugins, framework.WithClientSet(client))
+			if err != nil {
+				t.Fatal(err)
 			}
-			var pluginConfigs []schedulerapi.PluginConfig
-			for _, f := range test.registerPlugins {
-				f(&registry, plugins, pluginConfigs)
-			}
-			fwk, _ := framework.NewFramework(registry, plugins, pluginConfigs)
 
 			scheduler := NewGenericScheduler(
 				cache,
 				queue,
-				nil,
-				priorities.EmptyMetadataProducer,
 				emptySnapshot,
 				fwk,
 				extenders,

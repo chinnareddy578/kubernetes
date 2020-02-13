@@ -20,37 +20,38 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/clock"
-	"k8s.io/apimachinery/pkg/util/sets"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
-	fakeV1 "k8s.io/client-go/kubernetes/typed/core/v1/fake"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	apitesting "k8s.io/kubernetes/pkg/api/testing"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config/scheme"
 	extenderv1 "k8s.io/kubernetes/pkg/scheduler/apis/extender/v1"
 	frameworkplugins "k8s.io/kubernetes/pkg/scheduler/framework/plugins"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/defaultbinder"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/interpodaffinity"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/nodelabel"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/noderesources"
+	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/queuesort"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/serviceaffinity"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
+	"k8s.io/kubernetes/pkg/scheduler/listers"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
-	nodeinfosnapshot "k8s.io/kubernetes/pkg/scheduler/nodeinfo/snapshot"
 )
 
 const (
@@ -65,7 +66,7 @@ func TestCreate(t *testing.T) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	factory := newConfigFactory(client, v1.DefaultHardPodAffinitySymmetricWeight, stopCh)
-	factory.Create()
+	factory.createFromProvider(schedulerapi.SchedulerDefaultProviderName)
 }
 
 // Test configures a scheduler from a policies defined in a file
@@ -102,24 +103,34 @@ func TestCreateFromConfig(t *testing.T) {
 		t.Errorf("Invalid configuration: %v", err)
 	}
 
-	sched, err := factory.CreateFromConfig(policy)
+	sched, err := factory.createFromConfig(policy)
 	if err != nil {
-		t.Fatalf("CreateFromConfig failed: %v", err)
+		t.Fatalf("createFromConfig failed: %v", err)
 	}
 	hpa := factory.hardPodAffinitySymmetricWeight
 	if hpa != v1.DefaultHardPodAffinitySymmetricWeight {
 		t.Errorf("Wrong hardPodAffinitySymmetricWeight, ecpected: %d, got: %d", v1.DefaultHardPodAffinitySymmetricWeight, hpa)
 	}
+	queueSortPls := sched.Framework.ListPlugins()["QueueSortPlugin"]
+	wantQueuePls := []schedulerapi.Plugin{{Name: queuesort.Name}}
+	if diff := cmp.Diff(wantQueuePls, queueSortPls); diff != "" {
+		t.Errorf("Unexpected QueueSort plugins (-want, +got): %s", diff)
+	}
+	bindPls := sched.Framework.ListPlugins()["BindPlugin"]
+	wantBindPls := []schedulerapi.Plugin{{Name: defaultbinder.Name}}
+	if diff := cmp.Diff(wantBindPls, bindPls); diff != "" {
+		t.Errorf("Unexpected Bind plugins (-want, +got): %s", diff)
+	}
 
 	// Verify that node label predicate/priority are converted to framework plugins.
 	wantArgs := `{"Name":"NodeLabel","Args":{"presentLabels":["zone"],"absentLabels":["foo"],"presentLabelsPreference":["l1"],"absentLabelsPreference":["l2"]}}`
-	verifyPluginConvertion(t, nodelabel.Name, []string{"FilterPlugin", "ScorePlugin"}, sched, 6, wantArgs)
+	verifyPluginConvertion(t, nodelabel.Name, []string{"FilterPlugin", "ScorePlugin"}, sched, factory, 6, wantArgs)
 	// Verify that service affinity custom predicate/priority is converted to framework plugin.
 	wantArgs = `{"Name":"ServiceAffinity","Args":{"labels":["zone","foo"],"antiAffinityLabelsPreference":["rack","zone"]}}`
-	verifyPluginConvertion(t, serviceaffinity.Name, []string{"FilterPlugin", "ScorePlugin"}, sched, 6, wantArgs)
+	verifyPluginConvertion(t, serviceaffinity.Name, []string{"FilterPlugin", "ScorePlugin"}, sched, factory, 6, wantArgs)
 }
 
-func verifyPluginConvertion(t *testing.T, name string, extentionPoints []string, sched *Scheduler, wantWeight int32, wantArgs string) {
+func verifyPluginConvertion(t *testing.T, name string, extentionPoints []string, sched *Scheduler, configurator *Configurator, wantWeight int32, wantArgs string) {
 	for _, extensionPoint := range extentionPoints {
 		plugin, ok := findPlugin(name, extensionPoint, sched)
 		if !ok {
@@ -131,7 +142,7 @@ func verifyPluginConvertion(t *testing.T, name string, extentionPoints []string,
 			}
 		}
 		// Verify that the policy config is converted to plugin config.
-		pluginConfig := findPluginConfig(name, sched)
+		pluginConfig := findPluginConfig(name, configurator)
 		encoding, err := json.Marshal(pluginConfig)
 		if err != nil {
 			t.Errorf("Failed to marshal %+v: %v", pluginConfig, err)
@@ -151,8 +162,8 @@ func findPlugin(name, extensionPoint string, sched *Scheduler) (schedulerapi.Plu
 	return schedulerapi.Plugin{}, false
 }
 
-func findPluginConfig(name string, sched *Scheduler) schedulerapi.PluginConfig {
-	for _, c := range sched.PluginConfig {
+func findPluginConfig(name string, configurator *Configurator) schedulerapi.PluginConfig {
+	for _, c := range configurator.pluginConfig {
 		if c.Name == name {
 			return c
 		}
@@ -181,17 +192,29 @@ func TestCreateFromConfigWithHardPodAffinitySymmetricWeight(t *testing.T) {
 		"priorities" : [
 			{"name" : "RackSpread", "weight" : 3, "argument" : {"serviceAntiAffinity" : {"label" : "rack"}}},
 			{"name" : "NodeAffinityPriority", "weight" : 2},
-			{"name" : "ImageLocalityPriority", "weight" : 1}
+			{"name" : "ImageLocalityPriority", "weight" : 1},
+			{"name" : "InterPodAffinityPriority", "weight" : 1}
 		],
 		"hardPodAffinitySymmetricWeight" : 10
 	}`)
 	if err := runtime.DecodeInto(scheme.Codecs.UniversalDecoder(), configData, &policy); err != nil {
-		t.Errorf("Invalid configuration: %v", err)
+		t.Fatalf("Invalid configuration: %v", err)
 	}
-	factory.CreateFromConfig(policy)
-	hpa := factory.hardPodAffinitySymmetricWeight
-	if hpa != 10 {
-		t.Errorf("Wrong hardPodAffinitySymmetricWeight, ecpected: %d, got: %d", 10, hpa)
+	factory.createFromConfig(policy)
+	// TODO(#87703): Verify that the entire pluginConfig is correct.
+	foundAffinityCfg := false
+	for _, cfg := range factory.pluginConfig {
+		if cfg.Name == interpodaffinity.Name {
+			foundAffinityCfg = true
+			wantArgs := runtime.Unknown{Raw: []byte(`{"hardPodAffinityWeight":10}`)}
+
+			if diff := cmp.Diff(wantArgs, cfg.Args); diff != "" {
+				t.Errorf("wrong InterPodAffinity args (-want, +got): %s", diff)
+			}
+		}
+	}
+	if !foundAffinityCfg {
+		t.Errorf("args for InterPodAffinity were not found")
 	}
 }
 
@@ -209,20 +232,30 @@ func TestCreateFromEmptyConfig(t *testing.T) {
 		t.Errorf("Invalid configuration: %v", err)
 	}
 
-	factory.CreateFromConfig(policy)
+	factory.createFromConfig(policy)
+	wantConfig := []schedulerapi.PluginConfig{
+		{
+			Name: noderesources.FitName,
+			Args: runtime.Unknown{Raw: []byte(`null`)},
+		},
+		{
+			Name: interpodaffinity.Name,
+			Args: runtime.Unknown{Raw: []byte(`{"hardPodAffinityWeight":1}`)},
+		},
+	}
+	if diff := cmp.Diff(wantConfig, factory.pluginConfig); diff != "" {
+		t.Errorf("wrong plugin config (-want, +got): %s", diff)
+	}
 }
 
 // Test configures a scheduler from a policy that does not specify any
 // predicate/priority.
 // The predicate/priority from DefaultProvider will be used.
-// TODO(Huang-Wei): refactor (or remove) this test along with eliminating 'RegisterFitPredicate()'.
 func TestCreateFromConfigWithUnspecifiedPredicatesOrPriorities(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 	factory := newConfigFactory(client, v1.DefaultHardPodAffinitySymmetricWeight, stopCh)
-
-	RegisterAlgorithmProvider(schedulerapi.SchedulerDefaultProviderName, sets.NewString("PodFitsResources"), sets.NewString("NodeAffinityPriority"))
 
 	configData := []byte(`{
 		"kind" : "Policy",
@@ -233,22 +266,13 @@ func TestCreateFromConfigWithUnspecifiedPredicatesOrPriorities(t *testing.T) {
 		t.Fatalf("Invalid configuration: %v", err)
 	}
 
-	c, err := factory.CreateFromConfig(policy)
+	sched, err := factory.createFromConfig(policy)
 	if err != nil {
 		t.Fatalf("Failed to create scheduler from configuration: %v", err)
 	}
-	if !foundPlugin(c.Plugins.Filter.Enabled, "NodeResourcesFit") {
+	if _, exist := findPlugin("NodeResourcesFit", "FilterPlugin", sched); !exist {
 		t.Errorf("Expected plugin NodeResourcesFit")
 	}
-}
-
-func foundPlugin(plugins []schedulerapi.Plugin, name string) bool {
-	for _, plugin := range plugins {
-		if plugin.Name == name {
-			return true
-		}
-	}
-	return false
 }
 
 func TestDefaultErrorFunc(t *testing.T) {
@@ -381,111 +405,11 @@ func testClientGetPodRequest(client *fake.Clientset, t *testing.T, podNs string,
 	}
 }
 
-func TestBind(t *testing.T) {
-	table := []struct {
-		name    string
-		binding *v1.Binding
-	}{
-		{
-			name: "binding can bind and validate request",
-			binding: &v1.Binding{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: metav1.NamespaceDefault,
-					Name:      "foo",
-				},
-				Target: v1.ObjectReference{
-					Name: "foohost.kubernetes.mydomain.com",
-				},
-			},
-		},
-	}
-
-	for _, test := range table {
-		t.Run(test.name, func(t *testing.T) {
-			testBind(test.binding, t)
-		})
-	}
-}
-
-func testBind(binding *v1.Binding, t *testing.T) {
-	testPod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: binding.GetName(), Namespace: metav1.NamespaceDefault},
-		Spec:       apitesting.V1DeepEqualSafePodSpec(),
-	}
-	client := fake.NewSimpleClientset(&v1.PodList{Items: []v1.Pod{*testPod}})
-
-	b := binder{client}
-
-	if err := b.Bind(binding); err != nil {
-		t.Errorf("Unexpected error: %v", err)
-		return
-	}
-
-	pod := client.CoreV1().Pods(metav1.NamespaceDefault).(*fakeV1.FakePods)
-
-	actualBinding, err := pod.GetBinding(binding.GetName())
-	if err != nil {
-		t.Fatalf("Unexpected error: %v", err)
-		return
-	}
-	if !reflect.DeepEqual(binding, actualBinding) {
-		t.Errorf("Binding did not match expectation")
-		t.Logf("Expected: %v", binding)
-		t.Logf("Actual:   %v", actualBinding)
-	}
-}
-
-func TestInvalidHardPodAffinitySymmetricWeight(t *testing.T) {
-	client := fake.NewSimpleClientset()
-	// factory of "default-scheduler"
-	stopCh := make(chan struct{})
-	factory := newConfigFactory(client, -1, stopCh)
-	defer close(stopCh)
-	_, err := factory.Create()
-	if err == nil {
-		t.Errorf("expected err: invalid hardPodAffinitySymmetricWeight, got nothing")
-	}
-}
-
-func TestInvalidFactoryArgs(t *testing.T) {
-	client := fake.NewSimpleClientset()
-
-	testCases := []struct {
-		name                           string
-		hardPodAffinitySymmetricWeight int32
-		expectErr                      string
-	}{
-		{
-			name:                           "symmetric weight below range",
-			hardPodAffinitySymmetricWeight: -1,
-			expectErr:                      "invalid hardPodAffinitySymmetricWeight: -1, must be in the range [0-100]",
-		},
-		{
-			name:                           "symmetric weight above range",
-			hardPodAffinitySymmetricWeight: 101,
-			expectErr:                      "invalid hardPodAffinitySymmetricWeight: 101, must be in the range [0-100]",
-		},
-	}
-
-	for _, test := range testCases {
-		t.Run(test.name, func(t *testing.T) {
-			stopCh := make(chan struct{})
-			factory := newConfigFactory(client, test.hardPodAffinitySymmetricWeight, stopCh)
-			defer close(stopCh)
-			_, err := factory.Create()
-			if err == nil {
-				t.Errorf("expected err: %s, got nothing", test.expectErr)
-			}
-		})
-	}
-
-}
-
 func newConfigFactoryWithFrameworkRegistry(
 	client clientset.Interface, hardPodAffinitySymmetricWeight int32, stopCh <-chan struct{},
-	registry framework.Registry, pluginConfigProducerRegistry *frameworkplugins.ConfigProducerRegistry) *Configurator {
+	registry framework.Registry) *Configurator {
 	informerFactory := informers.NewSharedInformerFactory(client, 0)
-	snapshot := nodeinfosnapshot.NewEmptySnapshot()
+	snapshot := internalcache.NewEmptySnapshot()
 	return &Configurator{
 		client:                         client,
 		informerFactory:                informerFactory,
@@ -501,27 +425,21 @@ func newConfigFactoryWithFrameworkRegistry(
 		registry:                       registry,
 		plugins:                        nil,
 		pluginConfig:                   []schedulerapi.PluginConfig{},
-		pluginConfigProducerRegistry:   pluginConfigProducerRegistry,
 		nodeInfoSnapshot:               snapshot,
-		algorithmFactoryArgs: AlgorithmFactoryArgs{
-			SharedLister:                   snapshot,
-			InformerFactory:                informerFactory,
-			HardPodAffinitySymmetricWeight: hardPodAffinitySymmetricWeight,
-		},
-		configProducerArgs: &frameworkplugins.ConfigProducerArgs{},
 	}
 }
 
 func newConfigFactory(
 	client clientset.Interface, hardPodAffinitySymmetricWeight int32, stopCh <-chan struct{}) *Configurator {
 	return newConfigFactoryWithFrameworkRegistry(client, hardPodAffinitySymmetricWeight, stopCh,
-		frameworkplugins.NewInTreeRegistry(&frameworkplugins.RegistryArgs{}), frameworkplugins.NewConfigProducerRegistry())
+		frameworkplugins.NewInTreeRegistry())
 }
 
 type fakeExtender struct {
 	isBinder          bool
 	interestedPodName string
 	ignorable         bool
+	gotBind           bool
 }
 
 func (f *fakeExtender) Name() string {
@@ -535,7 +453,7 @@ func (f *fakeExtender) IsIgnorable() bool {
 func (f *fakeExtender) ProcessPreemption(
 	pod *v1.Pod,
 	nodeToVictims map[*v1.Node]*extenderv1.Victims,
-	nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo,
+	nodeInfos listers.NodeInfoLister,
 ) (map[*v1.Node]*extenderv1.Victims, error) {
 	return nil, nil
 }
@@ -544,11 +462,7 @@ func (f *fakeExtender) SupportsPreemption() bool {
 	return false
 }
 
-func (f *fakeExtender) Filter(
-	pod *v1.Pod,
-	nodes []*v1.Node,
-	nodeNameToInfo map[string]*schedulernodeinfo.NodeInfo,
-) (filteredNodes []*v1.Node, failedNodesMap extenderv1.FailedNodesMap, err error) {
+func (f *fakeExtender) Filter(pod *v1.Pod, nodes []*v1.Node) (filteredNodes []*v1.Node, failedNodesMap extenderv1.FailedNodesMap, err error) {
 	return nil, nil, nil
 }
 
@@ -561,6 +475,7 @@ func (f *fakeExtender) Prioritize(
 
 func (f *fakeExtender) Bind(binding *v1.Binding) error {
 	if f.isBinder {
+		f.gotBind = true
 		return nil
 	}
 	return errors.New("not a binder")
@@ -572,65 +487,6 @@ func (f *fakeExtender) IsBinder() bool {
 
 func (f *fakeExtender) IsInterested(pod *v1.Pod) bool {
 	return pod != nil && pod.Name == f.interestedPodName
-}
-
-func TestGetBinderFunc(t *testing.T) {
-	table := []struct {
-		podName            string
-		extenders          []algorithm.SchedulerExtender
-		expectedBinderType string
-		name               string
-	}{
-		{
-			name:    "the extender is not a binder",
-			podName: "pod0",
-			extenders: []algorithm.SchedulerExtender{
-				&fakeExtender{isBinder: false, interestedPodName: "pod0"},
-			},
-			expectedBinderType: "*scheduler.binder",
-		},
-		{
-			name:    "one of the extenders is a binder and interested in pod",
-			podName: "pod0",
-			extenders: []algorithm.SchedulerExtender{
-				&fakeExtender{isBinder: false, interestedPodName: "pod0"},
-				&fakeExtender{isBinder: true, interestedPodName: "pod0"},
-			},
-			expectedBinderType: "*scheduler.fakeExtender",
-		},
-		{
-			name:    "one of the extenders is a binder, but not interested in pod",
-			podName: "pod1",
-			extenders: []algorithm.SchedulerExtender{
-				&fakeExtender{isBinder: false, interestedPodName: "pod1"},
-				&fakeExtender{isBinder: true, interestedPodName: "pod0"},
-			},
-			expectedBinderType: "*scheduler.binder",
-		},
-	}
-
-	for _, test := range table {
-		t.Run(test.name, func(t *testing.T) {
-			testGetBinderFunc(test.expectedBinderType, test.podName, test.extenders, t)
-		})
-	}
-}
-
-func testGetBinderFunc(expectedBinderType, podName string, extenders []algorithm.SchedulerExtender, t *testing.T) {
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: podName,
-		},
-	}
-
-	f := &Configurator{}
-	binderFunc := getBinderFunc(f.client, extenders)
-	binder := binderFunc(pod)
-
-	binderType := fmt.Sprintf("%s", reflect.TypeOf(binder))
-	if binderType != expectedBinderType {
-		t.Errorf("Expected binder %q but got %q", expectedBinderType, binderType)
-	}
 }
 
 type TestPlugin struct {

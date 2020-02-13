@@ -22,6 +22,7 @@ limitations under the License.
 package nodelifecycle
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -813,7 +814,7 @@ func (nc *Controller) monitorNodeHealth() error {
 				return true, nil
 			}
 			name := node.Name
-			node, err = nc.kubeClient.CoreV1().Nodes().Get(name, metav1.GetOptions{})
+			node, err = nc.kubeClient.CoreV1().Nodes().Get(context.TODO(), name, metav1.GetOptions{})
 			if err != nil {
 				klog.Errorf("Failed while getting a Node to retry updating node health. Probably Node %s was deleted.", name)
 				return false, err
@@ -893,7 +894,7 @@ func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondi
 		if taintutils.TaintExists(node.Spec.Taints, NotReadyTaintTemplate) {
 			taintToAdd := *UnreachableTaintTemplate
 			if !nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{NotReadyTaintTemplate}, node) {
-				klog.Errorf("Failed to instantly swap UnreachableTaint to NotReadyTaint. Will try again in the next cycle.")
+				klog.Errorf("Failed to instantly swap NotReadyTaint to UnreachableTaint. Will try again in the next cycle.")
 			}
 		} else if nc.markNodeForTainting(node) {
 			klog.V(2).Infof("Node %v is unresponsive as of %v. Adding it to the Taint queue.",
@@ -1148,7 +1149,7 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 		_, currentReadyCondition = nodeutil.GetNodeCondition(&node.Status, v1.NodeReady)
 
 		if !apiequality.Semantic.DeepEqual(currentReadyCondition, &observedReadyCondition) {
-			if _, err := nc.kubeClient.CoreV1().Nodes().UpdateStatus(node); err != nil {
+			if _, err := nc.kubeClient.CoreV1().Nodes().UpdateStatus(context.TODO(), node, metav1.UpdateOptions{}); err != nil {
 				klog.Errorf("Error updating node %s: %v", node.Name, err)
 				return gracePeriod, observedReadyCondition, currentReadyCondition, err
 			}

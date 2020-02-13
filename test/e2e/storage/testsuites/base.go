@@ -43,6 +43,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework/metrics"
 	"k8s.io/kubernetes/test/e2e/framework/podlogs"
 	e2epv "k8s.io/kubernetes/test/e2e/framework/pv"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 )
@@ -126,7 +127,7 @@ func skipUnsupportedTest(driver TestDriver, pattern testpatterns.TestPattern) {
 			isSupported = false
 		}
 		if !isSupported {
-			framework.Skipf("Driver %s doesn't support snapshot type %v -- skipping", dInfo.Name, pattern.SnapshotType)
+			e2eskipper.Skipf("Driver %s doesn't support snapshot type %v -- skipping", dInfo.Name, pattern.SnapshotType)
 		}
 	} else {
 		// 2. Check if Whether volType is supported by driver from its interface
@@ -144,18 +145,18 @@ func skipUnsupportedTest(driver TestDriver, pattern testpatterns.TestPattern) {
 		}
 
 		if !isSupported {
-			framework.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
+			e2eskipper.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
 		}
 
 		// 3. Check if fsType is supported
 		if !dInfo.SupportedFsType.Has(pattern.FsType) {
-			framework.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.FsType)
+			e2eskipper.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.FsType)
 		}
 		if pattern.FsType == "xfs" && framework.NodeOSDistroIs("gci", "cos", "windows") {
-			framework.Skipf("Distro doesn't support xfs -- skipping")
+			e2eskipper.Skipf("Distro doesn't support xfs -- skipping")
 		}
 		if pattern.FsType == "ntfs" && !framework.NodeOSDistroIs("windows") {
-			framework.Skipf("Distro %s doesn't support ntfs -- skipping", framework.TestContext.NodeOSDistro)
+			e2eskipper.Skipf("Distro %s doesn't support ntfs -- skipping", framework.TestContext.NodeOSDistro)
 		}
 	}
 
@@ -226,7 +227,7 @@ func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern test
 
 			ginkgo.By("creating a StorageClass " + r.Sc.Name)
 
-			r.Sc, err = cs.StorageV1().StorageClasses().Create(r.Sc)
+			r.Sc, err = cs.StorageV1().StorageClasses().Create(context.TODO(), r.Sc, metav1.CreateOptions{})
 			framework.ExpectNoError(err)
 
 			if r.Sc != nil {
@@ -251,7 +252,7 @@ func CreateVolumeResource(driver TestDriver, config *PerTestConfig, pattern test
 	}
 
 	if r.VolSource == nil {
-		framework.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
+		e2eskipper.Skipf("Driver %s doesn't support %v -- skipping", dInfo.Name, pattern.VolType)
 	}
 
 	return &r
@@ -386,12 +387,12 @@ func createPVCPVFromDynamicProvisionSC(
 		framework.ExpectNoError(err)
 	}
 
-	pvc, err = cs.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(pvc.Name, metav1.GetOptions{})
+	pvc, err = cs.CoreV1().PersistentVolumeClaims(pvc.Namespace).Get(context.TODO(), pvc.Name, metav1.GetOptions{})
 	framework.ExpectNoError(err)
 
 	var pv *v1.PersistentVolume
 	if !isDelayedBinding(sc) {
-		pv, err = cs.CoreV1().PersistentVolumes().Get(pvc.Spec.VolumeName, metav1.GetOptions{})
+		pv, err = cs.CoreV1().PersistentVolumes().Get(context.TODO(), pvc.Spec.VolumeName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
 	}
 
@@ -407,7 +408,7 @@ func isDelayedBinding(sc *storagev1.StorageClass) bool {
 
 // deleteStorageClass deletes the passed in StorageClass and catches errors other than "Not Found"
 func deleteStorageClass(cs clientset.Interface, className string) error {
-	err := cs.StorageV1().StorageClasses().Delete(className, nil)
+	err := cs.StorageV1().StorageClasses().Delete(context.TODO(), className, nil)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
@@ -428,10 +429,9 @@ func convertTestConfig(in *PerTestConfig) volume.TestConfig {
 	}
 
 	return volume.TestConfig{
-		Namespace:      in.Framework.Namespace.Name,
-		Prefix:         in.Prefix,
-		ClientNodeName: in.ClientNodeName,
-		NodeSelector:   in.ClientNodeSelector,
+		Namespace:           in.Framework.Namespace.Name,
+		Prefix:              in.Prefix,
+		ClientNodeSelection: in.ClientNodeSelection,
 	}
 }
 
@@ -591,7 +591,7 @@ func getVolumeOpCounts(c clientset.Interface, pluginName string) opCounts {
 	totOps := getVolumeOpsFromMetricsForPlugin(testutil.Metrics(controllerMetrics), pluginName)
 
 	framework.Logf("Node name not specified for getVolumeOpCounts, falling back to listing nodes from API Server")
-	nodes, err := c.CoreV1().Nodes().List(metav1.ListOptions{})
+	nodes, err := c.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 	framework.ExpectNoError(err, "Error listing nodes: %v", err)
 	if len(nodes.Items) <= nodeLimit {
 		// For large clusters with > nodeLimit nodes it is too time consuming to
@@ -684,7 +684,7 @@ func validateMigrationVolumeOpCounts(cs clientset.Interface, pluginName string, 
 func skipVolTypePatterns(pattern testpatterns.TestPattern, driver TestDriver, skipVolTypes map[testpatterns.TestVolType]bool) {
 	_, supportsProvisioning := driver.(DynamicPVTestDriver)
 	if supportsProvisioning && skipVolTypes[pattern.VolType] {
-		framework.Skipf("Driver supports dynamic provisioning, skipping %s pattern", pattern.VolType)
+		e2eskipper.Skipf("Driver supports dynamic provisioning, skipping %s pattern", pattern.VolType)
 	}
 }
 

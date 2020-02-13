@@ -22,6 +22,7 @@ limitations under the License.
 package testsuites
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -37,6 +38,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 	"k8s.io/kubernetes/test/e2e/storage/utils"
@@ -119,7 +121,7 @@ func (t *volumeIOTestSuite) DefineTests(driver TestDriver, pattern testpatterns.
 		testVolumeSizeRange := t.GetTestSuiteInfo().SupportedSizeRange
 		l.resource = CreateVolumeResource(driver, l.config, pattern, testVolumeSizeRange)
 		if l.resource.VolSource == nil {
-			framework.Skipf("Driver %q does not define volumeSource - skipping", dInfo.Name)
+			e2eskipper.Skipf("Driver %q does not define volumeSource - skipping", dInfo.Name)
 		}
 
 	}
@@ -181,7 +183,7 @@ func createFileSizes(maxFileSize int64) []int64 {
 func makePodSpec(config volume.TestConfig, initCmd string, volsrc v1.VolumeSource, podSecContext *v1.PodSecurityContext) *v1.Pod {
 	var gracePeriod int64 = 1
 	volName := fmt.Sprintf("io-volume-%s", config.Namespace)
-	return &v1.Pod{
+	pod := &v1.Pod{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Pod",
 			APIVersion: "v1",
@@ -236,10 +238,11 @@ func makePodSpec(config volume.TestConfig, initCmd string, volsrc v1.VolumeSourc
 				},
 			},
 			RestartPolicy: v1.RestartPolicyNever, // want pod to fail if init container fails
-			NodeName:      config.ClientNodeName,
-			NodeSelector:  config.NodeSelector,
 		},
 	}
+
+	e2epod.SetNodeSelection(pod, config.ClientNodeSelection)
+	return pod
 }
 
 // Write `fsize` bytes to `fpath` in the pod, using dd and the `ddInput` file.
@@ -315,7 +318,7 @@ func testVolumeIO(f *framework.Framework, cs clientset.Interface, config volume.
 
 	ginkgo.By(fmt.Sprintf("starting %s", clientPod.Name))
 	podsNamespacer := cs.CoreV1().Pods(config.Namespace)
-	clientPod, err = podsNamespacer.Create(clientPod)
+	clientPod, err = podsNamespacer.Create(context.TODO(), clientPod, metav1.CreateOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to create client pod %q: %v", clientPod.Name, err)
 	}

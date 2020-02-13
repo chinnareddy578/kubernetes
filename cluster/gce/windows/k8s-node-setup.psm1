@@ -51,7 +51,7 @@
 #  - Document functions using proper syntax:
 #    https://technet.microsoft.com/en-us/library/hh847834(v=wps.620).aspx
 
-$INFRA_CONTAINER = 'gcr.io/gke-release/pause-win:1.0.0'
+$INFRA_CONTAINER = 'gcr.io/gke-release/pause-win:1.1.0'
 $GCE_METADATA_SERVER = "169.254.169.254"
 # The "management" interface is used by the kubelet and by Windows pods to talk
 # to the rest of the Kubernetes cluster *without NAT*. This interface does not
@@ -236,6 +236,8 @@ function Set-EnvironmentVars {
     "NODE_DIR" = ${kube_env}['NODE_DIR']
     "CNI_DIR" = ${kube_env}['CNI_DIR']
     "CNI_CONFIG_DIR" = ${kube_env}['CNI_CONFIG_DIR']
+    "WINDOWS_CNI_STORAGE_PATH" = ${kube_env}['WINDOWS_CNI_STORAGE_PATH']
+    "WINDOWS_CNI_VERSION" = ${kube_env}['WINDOWS_CNI_VERSION']
     "PKI_DIR" = ${kube_env}['PKI_DIR']
     "CA_FILE_PATH" = ${kube_env}['CA_FILE_PATH']
     "KUBELET_CONFIG" = ${kube_env}['KUBELET_CONFIG_FILE']
@@ -300,7 +302,7 @@ function Download-HelperScripts {
     return
   }
   MustDownload-File -OutFile ${env:K8S_DIR}\hns.psm1 `
-    -URLs "https://www.googleapis.com/storage/v1/b/gke-release/o/winnode%2fconfig%2fsdn%2fmaster%2fhns.psm1?alt=media"
+    -URLs "https://storage.googleapis.com/gke-release/winnode/config/sdn/master/hns.psm1"
 }
 
 # Takes the Windows version string from the cluster bash scripts (e.g.
@@ -916,7 +918,7 @@ function Configure-HostNetworkingService {
 function Configure-GcePdTools {
   if (ShouldWrite-File ${env:K8S_DIR}\GetGcePdName.dll) {
     MustDownload-File -OutFile ${env:K8S_DIR}\GetGcePdName.dll `
-      -URLs "https://www.googleapis.com/storage/v1/b/gke-release/o/winnode%2fconfig%2fgce-tools%2fmaster%2fGetGcePdName%2fGetGcePdName.dll?alt=media"
+      -URLs "https://storage.googleapis.com/gke-release/winnode/config/gce-tools/master/GetGcePdName/GetGcePdName.dll"
   }
   if (-not (Test-Path $PsHome\profile.ps1)) {
     New-Item -path $PsHome\profile.ps1 -type file
@@ -953,18 +955,15 @@ function Configure-CniNetworking {
 #   CLUSTER_IP_RANGE
 #   SERVICE_CLUSTER_IP_RANGE
 function Configure_Dockerd_CniNetworking {
-  $CNI_RELEASE_VERSION = 'v0.8.2-gke.0'
   if ((ShouldWrite-File ${env:CNI_DIR}\win-bridge.exe) -or
       (ShouldWrite-File ${env:CNI_DIR}\host-local.exe)) {
     $tmp_dir = 'C:\cni_tmp'
     New-Item $tmp_dir -ItemType 'directory' -Force | Out-Null
 
-    $release_url = ('https://www.googleapis.com/storage/v1/b/gke-release/o/cni-plugins%2f' +
-        $CNI_RELEASE_VERSION + '%2f')
-    $sha_url = ($release_url +
-        "cni-plugins-windows-amd64-$CNI_RELEASE_VERSION.tgz.sha1?alt=media")
+    $release_url = (${env:WINDOWS_CNI_STORAGE_PATH} + '/' + ${env:WINDOWS_CNI_VERSION} + '/')
     $tgz_url = ($release_url +
-        "cni-plugins-windows-amd64-$CNI_RELEASE_VERSION.tgz?alt=media")
+        "cni-plugins-windows-amd64-${env:WINDOWS_CNI_VERSION}.tgz")
+    $sha_url = ($tgz_url + ".sha1")
     MustDownload-File -URLs $sha_url -OutFile $tmp_dir\cni-plugins.sha1
     $sha1_val = ($(Get-Content $tmp_dir\cni-plugins.sha1) -split ' ',2)[0]
     MustDownload-File `
@@ -1238,8 +1237,8 @@ function Verify-WorkerServices {
 }
 
 function DownloadAndInstall-Crictl {
-  $CRICTL_VERSION = "v1.16.1"
-  $CRICTL_SHA256 = "69a53602f9a8469d4a86284e318fe19b33e97577f7836f48e6f4fb2ed1822baa"
+  $CRICTL_VERSION = "v1.17.0"
+  $CRICTL_SHA256 = "781fd3bd15146a924c6fc2428b11d8a0f20fa04a0c8e00a9a5808f2cc37e0569"
 
   # Assume that presence of crictl.exe indicates that the crictl binaries
   # were already previously downloaded to this node.
@@ -1551,7 +1550,7 @@ function Restart-LoggingAgent {
       Throw ("Timeout while waiting for StackdriverLogging service to stop")
     }
   }
-  
+
   Start-Service StackdriverLogging
 }
 
@@ -1583,8 +1582,8 @@ function Install-LoggingAgent {
     return
   }
 
-  $url = ("https://www.googleapis.com/storage/v1/b/gke-release/o/winnode%2fstackdriver%2f" +
-          "StackdriverLogging-${STACKDRIVER_VERSION}.exe?alt=media")
+  $url = ("https://storage.googleapis.com/gke-release/winnode/stackdriver/" +
+          "StackdriverLogging-${STACKDRIVER_VERSION}.exe")
   $tmp_dir = 'C:\stackdriver_tmp'
   New-Item $tmp_dir -ItemType 'directory' -Force | Out-Null
   $installer_file = "${tmp_dir}\StackdriverLogging-${STACKDRIVER_VERSION}.exe"
@@ -1613,12 +1612,12 @@ function Install-LoggingAgent {
 function Configure-LoggingAgent {
   $fluentd_config_dir = "$STACKDRIVER_ROOT\LoggingAgent\config.d"
   $fluentd_config_file = "$fluentd_config_dir\k8s_containers.conf"
-  
+
   # Create a configuration file for kubernetes containers.
   # The config.d directory should have already been created automatically, but
   # try creating again just in case.
   New-Item $fluentd_config_dir -ItemType 'directory' -Force | Out-Null
-  
+
   $config = $FLUENTD_CONFIG.replace('NODE_NAME', (hostname))
   $config | Out-File -FilePath $fluentd_config_file -Encoding ASCII
   Log-Output "Wrote fluentd logging config to $fluentd_config_file"

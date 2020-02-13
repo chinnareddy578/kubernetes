@@ -36,6 +36,7 @@ limitations under the License.
 package drivers
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"time"
@@ -52,6 +53,8 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
+	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	"k8s.io/kubernetes/test/e2e/framework/volume"
 	"k8s.io/kubernetes/test/e2e/storage/testpatterns"
 	"k8s.io/kubernetes/test/e2e/storage/testsuites"
@@ -134,7 +137,7 @@ func (h *hostpathCSIDriver) GetDriverInfo() *testsuites.DriverInfo {
 
 func (h *hostpathCSIDriver) SkipUnsupportedTest(pattern testpatterns.TestPattern) {
 	if pattern.VolType == testpatterns.CSIInlineVolume && len(h.volumeAttributes) == 0 {
-		framework.Skipf("%s has no volume attributes defined, doesn't support ephemeral inline volumes", h.driverInfo.Name)
+		e2eskipper.Skipf("%s has no volume attributes defined, doesn't support ephemeral inline volumes", h.driverInfo.Name)
 	}
 }
 
@@ -173,10 +176,10 @@ func (h *hostpathCSIDriver) PrepareTest(f *framework.Framework) (*testsuites.Per
 	node, err := e2enode.GetRandomReadySchedulableNode(cs)
 	framework.ExpectNoError(err)
 	config := &testsuites.PerTestConfig{
-		Driver:         h,
-		Prefix:         "hostpath",
-		Framework:      f,
-		ClientNodeName: node.Name,
+		Driver:              h,
+		Prefix:              "hostpath",
+		Framework:           f,
+		ClientNodeSelection: e2epod.NodeSelection{Name: node.Name},
 	}
 
 	o := utils.PatchCSIOptions{
@@ -297,10 +300,10 @@ func (m *mockCSIDriver) PrepareTest(f *framework.Framework) (*testsuites.PerTest
 	node, err := e2enode.GetRandomReadySchedulableNode(cs)
 	framework.ExpectNoError(err)
 	config := &testsuites.PerTestConfig{
-		Driver:         m,
-		Prefix:         "mock",
-		Framework:      f,
-		ClientNodeName: node.Name,
+		Driver:              m,
+		Prefix:              "mock",
+		Framework:           f,
+		ClientNodeSelection: e2epod.NodeSelection{Name: node.Name},
 	}
 
 	containerArgs := []string{"--name=csi-mock-" + f.UniqueName}
@@ -322,7 +325,7 @@ func (m *mockCSIDriver) PrepareTest(f *framework.Framework) (*testsuites.PerTest
 		DriverContainerName:      "mock",
 		DriverContainerArguments: containerArgs,
 		ProvisionerContainerName: "csi-provisioner",
-		NodeName:                 config.ClientNodeName,
+		NodeName:                 node.Name,
 		PodInfo:                  m.podInfo,
 		CanAttach:                &m.attachable,
 		VolumeLifecycleModes: &[]storagev1beta1.VolumeLifecycleMode{
@@ -397,12 +400,12 @@ func (g *gcePDCSIDriver) GetDriverInfo() *testsuites.DriverInfo {
 }
 
 func (g *gcePDCSIDriver) SkipUnsupportedTest(pattern testpatterns.TestPattern) {
-	framework.SkipUnlessProviderIs("gce", "gke")
+	e2eskipper.SkipUnlessProviderIs("gce", "gke")
 	if pattern.FsType == "xfs" {
-		framework.SkipUnlessNodeOSDistroIs("ubuntu", "custom")
+		e2eskipper.SkipUnlessNodeOSDistroIs("ubuntu", "custom")
 	}
 	if pattern.FeatureTag == "[sig-windows]" {
-		framework.Skipf("Skipping tests for windows since CSI does not support it yet")
+		e2eskipper.Skipf("Skipping tests for windows since CSI does not support it yet")
 	}
 }
 
@@ -490,8 +493,8 @@ func waitForCSIDriverRegistrationOnAllNodes(driverName string, cs clientset.Inte
 func waitForCSIDriverRegistrationOnNode(nodeName string, driverName string, cs clientset.Interface) error {
 	const csiNodeRegisterTimeout = 1 * time.Minute
 
-	return wait.PollImmediate(10*time.Second, csiNodeRegisterTimeout, func() (bool, error) {
-		csiNode, err := cs.StorageV1().CSINodes().Get(nodeName, metav1.GetOptions{})
+	waitErr := wait.PollImmediate(10*time.Second, csiNodeRegisterTimeout, func() (bool, error) {
+		csiNode, err := cs.StorageV1().CSINodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
 		if err != nil && !apierrors.IsNotFound(err) {
 			return false, err
 		}
@@ -502,4 +505,8 @@ func waitForCSIDriverRegistrationOnNode(nodeName string, driverName string, cs c
 		}
 		return false, nil
 	})
+	if waitErr != nil {
+		return fmt.Errorf("error waiting for CSI driver %s registration on node %s: %v", driverName, nodeName, waitErr)
+	}
+	return nil
 }

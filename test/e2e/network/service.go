@@ -18,6 +18,7 @@ package network
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -50,6 +51,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework/providers/gce"
 	e2erc "k8s.io/kubernetes/test/e2e/framework/rc"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
+	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 	e2essh "k8s.io/kubernetes/test/e2e/framework/ssh"
 	testutils "k8s.io/kubernetes/test/utils"
 	imageutils "k8s.io/kubernetes/test/utils/image"
@@ -101,6 +103,9 @@ var (
 		},
 	}
 )
+
+// portsByPodName is a map that maps pod name to container ports.
+type portsByPodName map[string][]int
 
 // CheckAffinity function tests whether the service affinity works as expected.
 // If affinity is expected, the test will return true once affinityConfirmCount
@@ -195,7 +200,7 @@ func StartServeHostnameService(c clientset.Interface, svc *v1.Service, ns string
 	podNames := make([]string, replicas)
 	name := svc.ObjectMeta.Name
 	ginkgo.By("creating service " + name + " in namespace " + ns)
-	_, err := c.CoreV1().Services(ns).Create(svc)
+	_, err := c.CoreV1().Services(ns).Create(context.TODO(), svc, metav1.CreateOptions{})
 	if err != nil {
 		return podNames, "", err
 	}
@@ -228,7 +233,7 @@ func StartServeHostnameService(c clientset.Interface, svc *v1.Service, ns string
 	}
 	sort.StringSlice(podNames).Sort()
 
-	service, err := c.CoreV1().Services(ns).Get(name, metav1.GetOptions{})
+	service, err := c.CoreV1().Services(ns).Get(context.TODO(), name, metav1.GetOptions{})
 	if err != nil {
 		return podNames, "", err
 	}
@@ -244,7 +249,7 @@ func StopServeHostnameService(clientset clientset.Interface, ns, name string) er
 	if err := e2erc.DeleteRCAndWaitForGC(clientset, ns, name); err != nil {
 		return err
 	}
-	if err := clientset.CoreV1().Services(ns).Delete(name, nil); err != nil {
+	if err := clientset.CoreV1().Services(ns).Delete(context.TODO(), name, nil); err != nil {
 		return err
 	}
 	return nil
@@ -670,7 +675,7 @@ func restartKubeProxy(host string) error {
 // waitForApiserverUp waits for the kube-apiserver to be up.
 func waitForApiserverUp(c clientset.Interface) error {
 	for start := time.Now(); time.Since(start) < time.Minute; time.Sleep(5 * time.Second) {
-		body, err := c.CoreV1().RESTClient().Get().AbsPath("/healthz").Do().Raw()
+		body, err := c.CoreV1().RESTClient().Get().AbsPath("/healthz").Do(context.TODO()).Raw()
 		if err == nil && string(body) == "ok" {
 			return nil
 		}
@@ -705,10 +710,10 @@ var _ = SIGDescribe("Services", func() {
 	/*
 		Release : v1.9
 		Testname: Kubernetes Service
-		Description: By default when a kubernetes cluster is running there MUST be a ‘kubernetes’ service running in the cluster.
+		Description: By default when a kubernetes cluster is running there MUST be a 'kubernetes' service running in the cluster.
 	*/
 	framework.ConformanceIt("should provide secure master service ", func() {
-		_, err := cs.CoreV1().Services(metav1.NamespaceDefault).Get("kubernetes", metav1.GetOptions{})
+		_, err := cs.CoreV1().Services(metav1.NamespaceDefault).Get(context.TODO(), "kubernetes", metav1.GetOptions{})
 		framework.ExpectNoError(err, "failed to fetch the service object for the service named kubernetes")
 	})
 
@@ -724,19 +729,19 @@ var _ = SIGDescribe("Services", func() {
 
 		ginkgo.By("creating service " + serviceName + " in namespace " + ns)
 		defer func() {
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 		_, err := jig.CreateTCPServiceWithPort(nil, 80)
 		framework.ExpectNoError(err)
 
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		names := map[string]bool{}
 		defer func() {
 			for name := range names {
-				err := cs.CoreV1().Pods(ns).Delete(name, nil)
+				err := cs.CoreV1().Pods(ns).Delete(context.TODO(), name, nil)
 				framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", name, ns)
 			}
 		}()
@@ -746,22 +751,22 @@ var _ = SIGDescribe("Services", func() {
 
 		createPodOrFail(cs, ns, name1, jig.Labels, []v1.ContainerPort{{ContainerPort: 80}})
 		names[name1] = true
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{name1: {80}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name1: {80}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		createPodOrFail(cs, ns, name2, jig.Labels, []v1.ContainerPort{{ContainerPort: 80}})
 		names[name2] = true
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{name1: {80}, name2: {80}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name1: {80}, name2: {80}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		e2epod.DeletePodOrFail(cs, ns, name1)
 		delete(names, name1)
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{name2: {80}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{name2: {80}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		e2epod.DeletePodOrFail(cs, ns, name2)
 		delete(names, name2)
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 	})
 
@@ -777,7 +782,7 @@ var _ = SIGDescribe("Services", func() {
 		jig := e2eservice.NewTestJig(cs, ns, serviceName)
 
 		defer func() {
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 
@@ -803,13 +808,13 @@ var _ = SIGDescribe("Services", func() {
 
 		port1 := 100
 		port2 := 101
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		names := map[string]bool{}
 		defer func() {
 			for name := range names {
-				err := cs.CoreV1().Pods(ns).Delete(name, nil)
+				err := cs.CoreV1().Pods(ns).Delete(context.TODO(), name, nil)
 				framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", name, ns)
 			}
 		}()
@@ -832,34 +837,34 @@ var _ = SIGDescribe("Services", func() {
 
 		createPodOrFail(cs, ns, podname1, jig.Labels, containerPorts1)
 		names[podname1] = true
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{podname1: {port1}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{podname1: {port1}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		createPodOrFail(cs, ns, podname2, jig.Labels, containerPorts2)
 		names[podname2] = true
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{podname1: {port1}, podname2: {port2}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{podname1: {port1}, podname2: {port2}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		e2epod.DeletePodOrFail(cs, ns, podname1)
 		delete(names, podname1)
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{podname2: {port2}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{podname2: {port2}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		e2epod.DeletePodOrFail(cs, ns, podname2)
 		delete(names, podname2)
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 	})
 
 	ginkgo.It("should preserve source pod IP for traffic thru service cluster IP [LinuxOnly]", func() {
 		// this test is creating a pod with HostNetwork=true, which is not supported on Windows.
-		framework.SkipIfNodeOSDistroIs("windows")
+		e2eskipper.SkipIfNodeOSDistroIs("windows")
 
 		// This behavior is not supported if Kube-proxy is in "userspace" mode.
 		// So we check the kube-proxy mode and skip this test if that's the case.
 		if proxyMode, err := proxyMode(f); err == nil {
 			if proxyMode == "userspace" {
-				framework.Skipf("The test doesn't work with kube-proxy in userspace mode")
+				e2eskipper.Skipf("The test doesn't work with kube-proxy in userspace mode")
 			}
 		} else {
 			framework.Logf("Couldn't detect KubeProxy mode - test failure may be expected: %v", err)
@@ -875,7 +880,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the sourceip test service")
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 		serviceIP := tcpService.Spec.ClusterIP
@@ -886,24 +891,24 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		nodeCounts := len(nodes.Items)
 		if nodeCounts < 2 {
-			framework.Skipf("The test requires at least two ready nodes on %s, but found %v", framework.TestContext.Provider, nodeCounts)
+			e2eskipper.Skipf("The test requires at least two ready nodes on %s, but found %v", framework.TestContext.Provider, nodeCounts)
 		}
 
 		ginkgo.By("Creating a webserver pod to be part of the TCP service which echoes back source ip")
 		serverPodName := "echo-sourceip"
 		pod := f.NewAgnhostPod(serverPodName, "netexec", "--http-port", strconv.Itoa(servicePort))
 		pod.Labels = jig.Labels
-		_, err = cs.CoreV1().Pods(ns).Create(pod)
+		_, err = cs.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 		framework.ExpectNoError(f.WaitForPodReady(pod.Name))
 		defer func() {
 			framework.Logf("Cleaning up the echo server pod")
-			err := cs.CoreV1().Pods(ns).Delete(serverPodName, nil)
+			err := cs.CoreV1().Pods(ns).Delete(context.TODO(), serverPodName, nil)
 			framework.ExpectNoError(err, "failed to delete pod: %s on node", serverPodName)
 		}()
 
 		// Waiting for service to expose endpoint.
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{serverPodName: {servicePort}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		ginkgo.By("Creating pause pod deployment")
@@ -911,17 +916,17 @@ var _ = SIGDescribe("Services", func() {
 
 		defer func() {
 			framework.Logf("Deleting deployment")
-			err = cs.AppsV1().Deployments(ns).Delete(deployment.Name, &metav1.DeleteOptions{})
+			err = cs.AppsV1().Deployments(ns).Delete(context.TODO(), deployment.Name, &metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "Failed to delete deployment %s", deployment.Name)
 		}()
 
 		framework.ExpectNoError(e2edeploy.WaitForDeploymentComplete(cs, deployment), "Failed to complete pause pod deployment")
 
-		deployment, err = cs.AppsV1().Deployments(ns).Get(deployment.Name, metav1.GetOptions{})
+		deployment, err = cs.AppsV1().Deployments(ns).Get(context.TODO(), deployment.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, "Error in retrieving pause pod deployment")
 		labelSelector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
 
-		pausePods, err := cs.CoreV1().Pods(ns).List(metav1.ListOptions{LabelSelector: labelSelector.String()})
+		pausePods, err := cs.CoreV1().Pods(ns).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String()})
 		framework.ExpectNoError(err, "Error in listing pods associated with pause pod deployments")
 
 		gomega.Expect(pausePods.Items[0].Spec.NodeName).ToNot(gomega.Equal(pausePods.Items[1].Spec.NodeName))
@@ -951,12 +956,12 @@ var _ = SIGDescribe("Services", func() {
 		serverPodName := "hairpin"
 		podTemplate := f.NewAgnhostPod(serverPodName, "netexec", "--http-port", strconv.Itoa(servicePort))
 		podTemplate.Labels = jig.Labels
-		pod, err := cs.CoreV1().Pods(ns).Create(podTemplate)
+		pod, err := cs.CoreV1().Pods(ns).Create(context.TODO(), podTemplate, metav1.CreateOptions{})
 		framework.ExpectNoError(err)
 		framework.ExpectNoError(f.WaitForPodReady(pod.Name))
 
 		ginkgo.By("waiting for the service to expose an endpoint")
-		err = e2eendpoints.ValidateEndpointsPorts(cs, ns, serviceName, e2eendpoints.PortsByPodName{serverPodName: {servicePort}})
+		err = validateEndpointsPorts(cs, ns, serviceName, portsByPodName{serverPodName: {servicePort}})
 		framework.ExpectNoError(err, "failed to validate endpoints for service %s in namespace: %s", serviceName, ns)
 
 		ginkgo.By("Checking if the pod can reach itself")
@@ -967,9 +972,9 @@ var _ = SIGDescribe("Services", func() {
 	ginkgo.It("should be able to up and down services", func() {
 		// TODO: use the ServiceTestJig here
 		// this test uses e2essh.NodeSSHHosts that does not work if a Node only reports LegacyHostIP
-		framework.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
+		e2eskipper.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
 		// this test does not work if the Node does not support SSH Key
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		ns := f.Namespace.Name
 		numPods, servicePort := 3, defaultServeHostnameServicePort
@@ -1025,8 +1030,8 @@ var _ = SIGDescribe("Services", func() {
 
 	ginkgo.It("should work after restarting kube-proxy [Disruptive]", func() {
 		// TODO: use the ServiceTestJig here
-		framework.SkipUnlessProviderIs("gce", "gke")
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessProviderIs("gce", "gke")
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		ns := f.Namespace.Name
 		numPods, servicePort := 3, defaultServeHostnameServicePort
@@ -1070,8 +1075,8 @@ var _ = SIGDescribe("Services", func() {
 
 	ginkgo.It("should work after restarting apiserver [Disruptive]", func() {
 		// TODO: use the ServiceTestJig here
-		framework.SkipUnlessProviderIs("gce", "gke")
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessProviderIs("gce", "gke")
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		ns := f.Namespace.Name
 		numPods, servicePort := 3, 80
@@ -1150,7 +1155,7 @@ var _ = SIGDescribe("Services", func() {
 	// TODO: Get rid of [DisabledForLargeClusters] tag when issue #56138 is fixed.
 	ginkgo.It("should be able to change the type and ports of a service [Slow] [DisabledForLargeClusters]", func() {
 		// requires cloud load-balancer support
-		framework.SkipUnlessProviderIs("gce", "gke", "aws")
+		e2eskipper.SkipUnlessProviderIs("gce", "gke", "aws")
 
 		loadBalancerSupportsUDP := !framework.ProviderIs("aws")
 
@@ -1533,7 +1538,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the updating NodePorts test service")
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service: %s in namespace: %s", serviceName, ns)
 		}()
 		framework.Logf("Service Port TCP: %v", tcpService.Spec.Ports[0].Port)
@@ -1605,7 +1610,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the ExternalName to ClusterIP test service")
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1644,7 +1649,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the ExternalName to NodePort test service")
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1682,7 +1687,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the ClusterIP to ExternalName test service")
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1724,7 +1729,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		defer func() {
 			framework.Logf("Cleaning up the NodePort to ExternalName test service")
-			err := cs.CoreV1().Services(ns).Delete(serviceName, nil)
+			err := cs.CoreV1().Services(ns).Delete(context.TODO(), serviceName, nil)
 			framework.ExpectNoError(err, "failed to delete service %s in namespace %s", serviceName, ns)
 		}()
 
@@ -1965,7 +1970,7 @@ var _ = SIGDescribe("Services", func() {
 				PublishNotReadyAddresses: true,
 			},
 		}
-		rcSpec := e2erc.ByNameContainer(t.Name, 1, t.Image, t.Labels, v1.Container{
+		rcSpec := e2erc.ByNameContainer(t.Name, 1, t.Labels, v1.Container{
 			Args:  []string{"netexec", fmt.Sprintf("--http-port=%d", port)},
 			Name:  t.Name,
 			Image: t.Image,
@@ -2064,13 +2069,13 @@ var _ = SIGDescribe("Services", func() {
 		label := labels.SelectorFromSet(labels.Set(t.Labels))
 		options := metav1.ListOptions{LabelSelector: label.String()}
 		podClient := t.Client.CoreV1().Pods(f.Namespace.Name)
-		pods, err := podClient.List(options)
+		pods, err := podClient.List(context.TODO(), options)
 		if err != nil {
 			framework.Logf("warning: error retrieving pods: %s", err)
 		} else {
 			for _, pod := range pods.Items {
 				var gracePeriodSeconds int64 = 0
-				err := podClient.Delete(pod.Name, &metav1.DeleteOptions{GracePeriodSeconds: &gracePeriodSeconds})
+				err := podClient.Delete(context.TODO(), pod.Name, &metav1.DeleteOptions{GracePeriodSeconds: &gracePeriodSeconds})
 				if err != nil {
 					framework.Logf("warning: error force deleting pod '%s': %s", pod.Name, err)
 				}
@@ -2080,7 +2085,7 @@ var _ = SIGDescribe("Services", func() {
 
 	ginkgo.It("should only allow access from service loadbalancer source ranges [Slow]", func() {
 		// this feature currently supported only on GCE/GKE/AWS
-		framework.SkipUnlessProviderIs("gce", "gke", "aws")
+		e2eskipper.SkipUnlessProviderIs("gce", "gke", "aws")
 
 		loadBalancerLagTimeout := e2eservice.LoadBalancerLagTimeoutDefault
 		if framework.ProviderIs("aws") {
@@ -2104,7 +2109,7 @@ var _ = SIGDescribe("Services", func() {
 		_, err := jig.Run(nil)
 		framework.ExpectNoError(err)
 		// Make sure acceptPod is running. There are certain chances that pod might be teminated due to unexpected reasons.
-		acceptPod, err = cs.CoreV1().Pods(namespace).Get(acceptPod.Name, metav1.GetOptions{})
+		acceptPod, err = cs.CoreV1().Pods(namespace).Get(context.TODO(), acceptPod.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, "Unable to get pod %s", acceptPod.Name)
 		framework.ExpectEqual(acceptPod.Status.Phase, v1.PodRunning)
 		framework.ExpectNotEqual(acceptPod.Status.PodIP, "")
@@ -2135,7 +2140,7 @@ var _ = SIGDescribe("Services", func() {
 		checkReachabilityFromPod(false, normalReachabilityTimeout, namespace, dropPod.Name, svcIP)
 
 		// Make sure dropPod is running. There are certain chances that the pod might be teminated due to unexpected reasons.		dropPod, err = cs.CoreV1().Pods(namespace).Get(dropPod.Name, metav1.GetOptions{})
-		dropPod, err = cs.CoreV1().Pods(namespace).Get(dropPod.Name, metav1.GetOptions{})
+		dropPod, err = cs.CoreV1().Pods(namespace).Get(context.TODO(), dropPod.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, "Unable to get pod %s", dropPod.Name)
 		framework.ExpectEqual(acceptPod.Status.Phase, v1.PodRunning)
 		framework.ExpectNotEqual(acceptPod.Status.PodIP, "")
@@ -2160,7 +2165,7 @@ var _ = SIGDescribe("Services", func() {
 
 	// TODO: Get rid of [DisabledForLargeClusters] tag when issue #56138 is fixed.
 	ginkgo.It("should be able to create an internal type load balancer [Slow] [DisabledForLargeClusters]", func() {
-		framework.SkipUnlessProviderIs("azure", "gke", "gce")
+		e2eskipper.SkipUnlessProviderIs("azure", "gke", "gce")
 
 		createTimeout := e2eservice.GetServiceLoadBalancerCreationTimeout(cs)
 		pollInterval := framework.Poll * 10
@@ -2234,7 +2239,7 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		framework.Logf("Waiting up to %v for service %q to have an external LoadBalancer", createTimeout, serviceName)
 		if pollErr := wait.PollImmediate(pollInterval, createTimeout, func() (bool, error) {
-			svc, err := cs.CoreV1().Services(namespace).Get(serviceName, metav1.GetOptions{})
+			svc, err := cs.CoreV1().Services(namespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
 			if err != nil {
 				return false, err
 			}
@@ -2263,7 +2268,7 @@ var _ = SIGDescribe("Services", func() {
 			framework.ExpectNoError(err)
 			framework.Logf("Waiting up to %v for service %q to have an internal LoadBalancer", createTimeout, serviceName)
 			if pollErr := wait.PollImmediate(pollInterval, createTimeout, func() (bool, error) {
-				svc, err := cs.CoreV1().Services(namespace).Get(serviceName, metav1.GetOptions{})
+				svc, err := cs.CoreV1().Services(namespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
 				if err != nil {
 					return false, err
 				}
@@ -2284,8 +2289,8 @@ var _ = SIGDescribe("Services", func() {
 		const gceHcCheckIntervalSeconds = int64(8)
 		// This test is for clusters on GCE.
 		// (It restarts kube-controller-manager, which we don't support on GKE)
-		framework.SkipUnlessProviderIs("gce")
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessProviderIs("gce")
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		clusterID, err := gce.GetClusterID(cs)
 		if err != nil {
@@ -2352,28 +2357,28 @@ var _ = SIGDescribe("Services", func() {
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should have session affinity work for service with type clusterIP [LinuxOnly]", func() {
+	ginkgo.It("should have session affinity work for service with type clusterIP [LinuxOnly] [Flaky]", func() {
 		svc := getServeHostnameService("affinity-clusterip")
 		svc.Spec.Type = v1.ServiceTypeClusterIP
 		execAffinityTestForNonLBService(f, cs, svc)
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should be able to switch session affinity for service with type clusterIP [LinuxOnly]", func() {
+	ginkgo.It("should be able to switch session affinity for service with type clusterIP [LinuxOnly] [Flaky]", func() {
 		svc := getServeHostnameService("affinity-clusterip-transition")
 		svc.Spec.Type = v1.ServiceTypeClusterIP
 		execAffinityTestForNonLBServiceWithTransition(f, cs, svc)
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should have session affinity work for NodePort service [LinuxOnly]", func() {
+	ginkgo.It("should have session affinity work for NodePort service [LinuxOnly] [Flaky]", func() {
 		svc := getServeHostnameService("affinity-nodeport")
 		svc.Spec.Type = v1.ServiceTypeNodePort
 		execAffinityTestForNonLBService(f, cs, svc)
 	})
 
 	// [LinuxOnly]: Windows does not support session affinity.
-	ginkgo.It("should be able to switch session affinity for NodePort service [LinuxOnly]", func() {
+	ginkgo.It("should be able to switch session affinity for NodePort service [LinuxOnly] [Flaky]", func() {
 		svc := getServeHostnameService("affinity-nodeport-transition")
 		svc.Spec.Type = v1.ServiceTypeNodePort
 		execAffinityTestForNonLBServiceWithTransition(f, cs, svc)
@@ -2383,7 +2388,7 @@ var _ = SIGDescribe("Services", func() {
 	// [LinuxOnly]: Windows does not support session affinity.
 	ginkgo.It("should have session affinity work for LoadBalancer service with ESIPP on [Slow] [DisabledForLargeClusters] [LinuxOnly]", func() {
 		// L4 load balancer affinity `ClientIP` is not supported on AWS ELB.
-		framework.SkipIfProviderIs("aws")
+		e2eskipper.SkipIfProviderIs("aws")
 
 		svc := getServeHostnameService("affinity-lb-esipp")
 		svc.Spec.Type = v1.ServiceTypeLoadBalancer
@@ -2395,7 +2400,7 @@ var _ = SIGDescribe("Services", func() {
 	// [LinuxOnly]: Windows does not support session affinity.
 	ginkgo.It("should be able to switch session affinity for LoadBalancer service with ESIPP on [Slow] [DisabledForLargeClusters] [LinuxOnly]", func() {
 		// L4 load balancer affinity `ClientIP` is not supported on AWS ELB.
-		framework.SkipIfProviderIs("aws")
+		e2eskipper.SkipIfProviderIs("aws")
 
 		svc := getServeHostnameService("affinity-lb-esipp-transition")
 		svc.Spec.Type = v1.ServiceTypeLoadBalancer
@@ -2407,7 +2412,7 @@ var _ = SIGDescribe("Services", func() {
 	// [LinuxOnly]: Windows does not support session affinity.
 	ginkgo.It("should have session affinity work for LoadBalancer service with ESIPP off [Slow] [DisabledForLargeClusters] [LinuxOnly]", func() {
 		// L4 load balancer affinity `ClientIP` is not supported on AWS ELB.
-		framework.SkipIfProviderIs("aws")
+		e2eskipper.SkipIfProviderIs("aws")
 
 		svc := getServeHostnameService("affinity-lb")
 		svc.Spec.Type = v1.ServiceTypeLoadBalancer
@@ -2419,7 +2424,7 @@ var _ = SIGDescribe("Services", func() {
 	// [LinuxOnly]: Windows does not support session affinity.
 	ginkgo.It("should be able to switch session affinity for LoadBalancer service with ESIPP off [Slow] [DisabledForLargeClusters] [LinuxOnly]", func() {
 		// L4 load balancer affinity `ClientIP` is not supported on AWS ELB.
-		framework.SkipIfProviderIs("aws")
+		e2eskipper.SkipIfProviderIs("aws")
 
 		svc := getServeHostnameService("affinity-lb-transition")
 		svc.Spec.Type = v1.ServiceTypeLoadBalancer
@@ -2429,9 +2434,9 @@ var _ = SIGDescribe("Services", func() {
 
 	ginkgo.It("should implement service.kubernetes.io/service-proxy-name", func() {
 		// this test uses e2essh.NodeSSHHosts that does not work if a Node only reports LegacyHostIP
-		framework.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
+		e2eskipper.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
 		// this test does not work if the Node does not support SSH Key
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		ns := f.Namespace.Name
 		numPods, servicePort := 3, defaultServeHostnameServicePort
@@ -2492,9 +2497,9 @@ var _ = SIGDescribe("Services", func() {
 
 	ginkgo.It("should implement service.kubernetes.io/headless", func() {
 		// this test uses e2essh.NodeSSHHosts that does not work if a Node only reports LegacyHostIP
-		framework.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
+		e2eskipper.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
 		// this test does not work if the Node does not support SSH Key
-		framework.SkipUnlessSSHKeyPresent()
+		e2eskipper.SkipUnlessSSHKeyPresent()
 
 		ns := f.Namespace.Name
 		numPods, servicePort := 3, defaultServeHostnameServicePort
@@ -2634,6 +2639,26 @@ var _ = SIGDescribe("Services", func() {
 		framework.ExpectNoError(err)
 		e2eservice.WaitForServiceUpdatedWithFinalizer(cs, svc.Namespace, svc.Name, true)
 	})
+
+	/*
+	   Release : v1.18
+	   Testname: Find Kubernetes Service in default Namespace
+	   Description: List all Services in all Namespaces, response MUST include a Service named Kubernetes with the Namespace of default.
+	*/
+	framework.ConformanceIt("should find a service from listing all namespaces", func() {
+		ginkgo.By("fetching services")
+		svcs, _ := f.ClientSet.CoreV1().Services("").List(context.TODO(), metav1.ListOptions{})
+
+		foundSvc := false
+		for _, svc := range svcs.Items {
+			if svc.ObjectMeta.Name == "kubernetes" && svc.ObjectMeta.Namespace == "default" {
+				foundSvc = true
+				break
+			}
+		}
+
+		framework.ExpectEqual(foundSvc, true, "could not find service 'kubernetes' in service list in all namespaces")
+	})
 })
 
 // TODO: Get rid of [DisabledForLargeClusters] tag when issue #56138 is fixed.
@@ -2646,7 +2671,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 
 	ginkgo.BeforeEach(func() {
 		// requires cloud load-balancer support - this feature currently supported only on GCE/GKE
-		framework.SkipUnlessProviderIs("gce", "gke")
+		e2eskipper.SkipUnlessProviderIs("gce", "gke")
 
 		cs = f.ClientSet
 		loadBalancerCreateTimeout = e2eservice.GetServiceLoadBalancerCreationTimeout(cs)
@@ -2688,7 +2713,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 				err := TestHTTPHealthCheckNodePort(ips[0], healthCheckNodePort, "/healthz", e2eservice.KubeProxyEndpointLagTimeout, false, threshold)
 				framework.ExpectNoError(err)
 			}
-			err = cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+			err = cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
 			framework.ExpectNoError(err)
 		}()
 
@@ -2714,7 +2739,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		svc, err := jig.CreateOnlyLocalNodePortService(true)
 		framework.ExpectNoError(err)
 		defer func() {
-			err := cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
 			framework.ExpectNoError(err)
 		}()
 
@@ -2757,7 +2782,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		defer func() {
 			err = jig.ChangeServiceType(v1.ServiceTypeClusterIP, loadBalancerCreateTimeout)
 			framework.ExpectNoError(err)
-			err := cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
 			framework.ExpectNoError(err)
 		}()
 
@@ -2818,7 +2843,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		defer func() {
 			err = jig.ChangeServiceType(v1.ServiceTypeClusterIP, loadBalancerCreateTimeout)
 			framework.ExpectNoError(err)
-			err := cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
 			framework.ExpectNoError(err)
 		}()
 
@@ -2833,16 +2858,16 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 
 		defer func() {
 			framework.Logf("Deleting deployment")
-			err = cs.AppsV1().Deployments(namespace).Delete(deployment.Name, &metav1.DeleteOptions{})
+			err = cs.AppsV1().Deployments(namespace).Delete(context.TODO(), deployment.Name, &metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "Failed to delete deployment %s", deployment.Name)
 		}()
 
-		deployment, err = cs.AppsV1().Deployments(namespace).Get(deployment.Name, metav1.GetOptions{})
+		deployment, err = cs.AppsV1().Deployments(namespace).Get(context.TODO(), deployment.Name, metav1.GetOptions{})
 		framework.ExpectNoError(err, "Error in retrieving pause pod deployment")
 		labelSelector, err := metav1.LabelSelectorAsSelector(deployment.Spec.Selector)
 		framework.ExpectNoError(err, "Error in setting LabelSelector as selector from deployment")
 
-		pausePods, err := cs.CoreV1().Pods(namespace).List(metav1.ListOptions{LabelSelector: labelSelector.String()})
+		pausePods, err := cs.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{LabelSelector: labelSelector.String()})
 		framework.ExpectNoError(err, "Error in listing pods associated with pause pod deployments")
 
 		pausePod := pausePods.Items[0]
@@ -2881,7 +2906,7 @@ var _ = SIGDescribe("ESIPP [Slow] [DisabledForLargeClusters]", func() {
 		defer func() {
 			err = jig.ChangeServiceType(v1.ServiceTypeClusterIP, loadBalancerCreateTimeout)
 			framework.ExpectNoError(err)
-			err := cs.CoreV1().Services(svc.Namespace).Delete(svc.Name, nil)
+			err := cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, nil)
 			framework.ExpectNoError(err)
 		}()
 
@@ -3036,7 +3061,7 @@ func execAffinityTestForNonLBServiceWithOptionalTransition(f *framework.Framewor
 		StopServeHostnameService(cs, ns, serviceName)
 	}()
 	jig := e2eservice.NewTestJig(cs, ns, serviceName)
-	svc, err = jig.Client.CoreV1().Services(ns).Get(serviceName, metav1.GetOptions{})
+	svc, err = jig.Client.CoreV1().Services(ns).Get(context.TODO(), serviceName, metav1.GetOptions{})
 	framework.ExpectNoError(err, "failed to fetch service: %s in namespace: %s", serviceName, ns)
 	var svcIP string
 	if serviceType == v1.ServiceTypeNodePort {
@@ -3053,7 +3078,7 @@ func execAffinityTestForNonLBServiceWithOptionalTransition(f *framework.Framewor
 	execPod := e2epod.CreateExecPodOrFail(cs, ns, "execpod-affinity", nil)
 	defer func() {
 		framework.Logf("Cleaning up the exec pod")
-		err := cs.CoreV1().Pods(ns).Delete(execPod.Name, nil)
+		err := cs.CoreV1().Pods(ns).Delete(context.TODO(), execPod.Name, nil)
 		framework.ExpectNoError(err, "failed to delete pod: %s in namespace: %s", execPod.Name, ns)
 	}()
 	err = jig.CheckServiceReachability(svc, execPod)
@@ -3153,7 +3178,7 @@ func createPausePodDeployment(cs clientset.Interface, name, ns string, replicas 
 		},
 	}
 
-	deployment, err := cs.AppsV1().Deployments(ns).Create(pauseDeployment)
+	deployment, err := cs.AppsV1().Deployments(ns).Create(context.TODO(), pauseDeployment, metav1.CreateOptions{})
 	framework.ExpectNoError(err, "Error in creating deployment for pause pod")
 	return deployment
 }
@@ -3180,7 +3205,7 @@ func createPodOrFail(c clientset.Interface, ns, name string, labels map[string]s
 			},
 		},
 	}
-	_, err := c.CoreV1().Pods(ns).Create(pod)
+	_, err := c.CoreV1().Pods(ns).Create(context.TODO(), pod, metav1.CreateOptions{})
 	framework.ExpectNoError(err, "failed to create pod %s in namespace %s", name, ns)
 }
 
@@ -3188,7 +3213,7 @@ func createPodOrFail(c clientset.Interface, ns, name string, labels map[string]s
 // until it's Running
 func launchHostExecPod(client clientset.Interface, ns, name string) *v1.Pod {
 	hostExecPod := e2epod.NewExecPodSpec(ns, name, true)
-	pod, err := client.CoreV1().Pods(ns).Create(hostExecPod)
+	pod, err := client.CoreV1().Pods(ns).Create(context.TODO(), hostExecPod, metav1.CreateOptions{})
 	framework.ExpectNoError(err)
 	err = e2epod.WaitForPodRunningInNamespace(client, pod)
 	framework.ExpectNoError(err)
@@ -3248,4 +3273,78 @@ func proxyMode(f *framework.Framework) (string, error) {
 // setting for the supported cloud providers (currently GCE/GKE and Azure) and empty functions for others.
 func enableAndDisableInternalLB() (enable func(svc *v1.Service), disable func(svc *v1.Service)) {
 	return framework.TestContext.CloudConfig.Provider.EnableAndDisableInternalLB()
+}
+
+func validatePorts(ep e2eendpoints.PortsByPodUID, expectedEndpoints e2eendpoints.PortsByPodUID) error {
+	if len(ep) != len(expectedEndpoints) {
+		// should not happen because we check this condition before
+		return fmt.Errorf("invalid number of endpoints got %v, expected %v", ep, expectedEndpoints)
+	}
+	for podUID := range expectedEndpoints {
+		if _, ok := ep[podUID]; !ok {
+			return fmt.Errorf("endpoint %v not found", podUID)
+		}
+		if len(ep[podUID]) != len(expectedEndpoints[podUID]) {
+			return fmt.Errorf("invalid list of ports for uid %v. Got %v, expected %v", podUID, ep[podUID], expectedEndpoints[podUID])
+		}
+		sort.Ints(ep[podUID])
+		sort.Ints(expectedEndpoints[podUID])
+		for index := range ep[podUID] {
+			if ep[podUID][index] != expectedEndpoints[podUID][index] {
+				return fmt.Errorf("invalid list of ports for uid %v. Got %v, expected %v", podUID, ep[podUID], expectedEndpoints[podUID])
+			}
+		}
+	}
+	return nil
+}
+
+func translatePodNameToUID(c clientset.Interface, ns string, expectedEndpoints portsByPodName) (e2eendpoints.PortsByPodUID, error) {
+	portsByUID := make(e2eendpoints.PortsByPodUID)
+	for name, portList := range expectedEndpoints {
+		pod, err := c.CoreV1().Pods(ns).Get(context.TODO(), name, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get pod %s, that's pretty weird. validation failed: %s", name, err)
+		}
+		portsByUID[pod.ObjectMeta.UID] = portList
+	}
+	return portsByUID, nil
+}
+
+// validateEndpointsPorts validates that the given service exists and is served by the given expectedEndpoints.
+func validateEndpointsPorts(c clientset.Interface, namespace, serviceName string, expectedEndpoints portsByPodName) error {
+	ginkgo.By(fmt.Sprintf("waiting up to %v for service %s in namespace %s to expose endpoints %v", framework.ServiceStartTimeout, serviceName, namespace, expectedEndpoints))
+	i := 1
+	for start := time.Now(); time.Since(start) < framework.ServiceStartTimeout; time.Sleep(1 * time.Second) {
+		ep, err := c.CoreV1().Endpoints(namespace).Get(context.TODO(), serviceName, metav1.GetOptions{})
+		if err != nil {
+			framework.Logf("Get endpoints failed (%v elapsed, ignoring for 5s): %v", time.Since(start), err)
+			continue
+		}
+		portsByPodUID := e2eendpoints.GetContainerPortsByPodUID(ep)
+		expectedPortsByPodUID, err := translatePodNameToUID(c, namespace, expectedEndpoints)
+		if err != nil {
+			return err
+		}
+		if len(portsByPodUID) == len(expectedEndpoints) {
+			err := validatePorts(portsByPodUID, expectedPortsByPodUID)
+			if err != nil {
+				return err
+			}
+			framework.Logf("successfully validated that service %s in namespace %s exposes endpoints %v (%v elapsed)",
+				serviceName, namespace, expectedEndpoints, time.Since(start))
+			return nil
+		}
+		if i%5 == 0 {
+			framework.Logf("Unexpected endpoints: found %v, expected %v (%v elapsed, will retry)", portsByPodUID, expectedEndpoints, time.Since(start))
+		}
+		i++
+	}
+	if pods, err := c.CoreV1().Pods(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{}); err == nil {
+		for _, pod := range pods.Items {
+			framework.Logf("Pod %s\t%s\t%s\t%s", pod.Namespace, pod.Name, pod.Spec.NodeName, pod.DeletionTimestamp)
+		}
+	} else {
+		framework.Logf("Can't list pod debug info: %v", err)
+	}
+	return fmt.Errorf("Timed out waiting for service %s in namespace %s to expose endpoints %v (%v elapsed)", serviceName, namespace, expectedEndpoints, framework.ServiceStartTimeout)
 }

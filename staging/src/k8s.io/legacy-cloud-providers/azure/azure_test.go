@@ -801,7 +801,7 @@ func TestReconcileSecurityGroupEtagMismatch(t *testing.T) {
 		HTTPStatusCode: http.StatusPreconditionFailed,
 		RawError:       errPreconditionFailedEtagMismatch,
 	}
-	assert.Equal(t, err, expectedError.Error())
+	assert.Equal(t, expectedError.Error(), err)
 }
 
 func TestReconcilePublicIPWithNewService(t *testing.T) {
@@ -893,6 +893,7 @@ func getTestCloud() (az *Cloud) {
 			ResourceGroup:                "rg",
 			VnetResourceGroup:            "rg",
 			RouteTableResourceGroup:      "rg",
+			SecurityGroupResourceGroup:   "rg",
 			Location:                     "westus",
 			VnetName:                     "vnet",
 			SubnetName:                   "subnet",
@@ -1149,7 +1150,7 @@ func getTestSecurityGroup(az *Cloud, services ...v1.Service) *network.SecurityGr
 	defer cancel()
 	az.SecurityGroupsClient.CreateOrUpdate(
 		ctx,
-		az.ResourceGroup,
+		az.SecurityGroupResourceGroup,
 		az.SecurityGroupName,
 		sg,
 		"")
@@ -1483,6 +1484,7 @@ func TestProtocolTranslationUDP(t *testing.T) {
 
 // Test Configuration deserialization (json)
 func TestNewCloudFromJSON(t *testing.T) {
+	// Fake values for testing.
 	config := `{
 		"tenantId": "--tenant-id--",
 		"subscriptionId": "--subscription-id--",
@@ -1492,6 +1494,7 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"aadClientCertPassword": "--aad-client-cert-password--",
 		"resourceGroup": "--resource-group--",
 		"routeTableResourceGroup": "--route-table-resource-group--",
+		"securityGroupResourceGroup": "--security-group-resource-group--",
 		"location": "--location--",
 		"subnetName": "--subnet-name--",
 		"securityGroupName": "--security-group-name--",
@@ -1509,6 +1512,8 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"loadBalancerCacheTTLInSeconds": 100,
 		"nsgCacheTTLInSeconds": 100,
 		"routeTableCacheTTLInSeconds": 100,
+		"vmType": "vmss",
+		"disableAvailabilitySetNodes": true
 	}`
 	validateConfig(t, config)
 }
@@ -1544,6 +1549,7 @@ aadClientCertPath: --aad-client-cert-path--
 aadClientCertPassword: --aad-client-cert-password--
 resourceGroup: --resource-group--
 routeTableResourceGroup: --route-table-resource-group--
+securityGroupResourceGroup: --security-group-resource-group--
 location: --location--
 subnetName: --subnet-name--
 securityGroupName: --security-group-name--
@@ -1565,6 +1571,8 @@ vmCacheTTLInSeconds: 100
 loadBalancerCacheTTLInSeconds: 100
 nsgCacheTTLInSeconds: 100
 routeTableCacheTTLInSeconds: 100
+vmType: vmss
+disableAvailabilitySetNodes: true
 `
 	validateConfig(t, config)
 }
@@ -1595,6 +1603,9 @@ func validateConfig(t *testing.T, config string) {
 	}
 	if azureCloud.RouteTableResourceGroup != "--route-table-resource-group--" {
 		t.Errorf("got incorrect value for RouteTableResourceGroup")
+	}
+	if azureCloud.SecurityGroupResourceGroup != "--security-group-resource-group--" {
+		t.Errorf("got incorrect value for SecurityGroupResourceGroup")
 	}
 	if azureCloud.Location != "--location--" {
 		t.Errorf("got incorrect value for Location")
@@ -1658,6 +1669,12 @@ func validateConfig(t *testing.T, config string) {
 	}
 	if azureCloud.RouteTableCacheTTLInSeconds != 100 {
 		t.Errorf("got incorrect value for routeTableCacheTTLInSeconds")
+	}
+	if azureCloud.VMType != vmTypeVMSS {
+		t.Errorf("got incorrect value for vmType")
+	}
+	if !azureCloud.DisableAvailabilitySetNodes {
+		t.Errorf("got incorrect value for disableAvailabilitySetNodes")
 	}
 }
 

@@ -32,6 +32,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
 	schedulerlisters "k8s.io/kubernetes/pkg/scheduler/listers"
 	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/kubernetes/pkg/scheduler/volumebinder"
 )
 
 // NodeScoreList declares a list of nodes and their scores.
@@ -155,6 +156,43 @@ func NewStatus(code Code, reasons ...string) *Status {
 	}
 }
 
+// PluginToStatus maps plugin name to status. Currently used to identify which Filter plugin
+// returned which status.
+type PluginToStatus map[string]*Status
+
+// Merge merges the statuses in the map into one. The resulting status code have the following
+// precedence: Error, UnschedulableAndUnresolvable, Unschedulable.
+func (p PluginToStatus) Merge() *Status {
+	if len(p) == 0 {
+		return nil
+	}
+
+	finalStatus := NewStatus(Success)
+	var hasError, hasUnschedulableAndUnresolvable, hasUnschedulable bool
+	for _, s := range p {
+		if s.Code() == Error {
+			hasError = true
+		} else if s.Code() == UnschedulableAndUnresolvable {
+			hasUnschedulableAndUnresolvable = true
+		} else if s.Code() == Unschedulable {
+			hasUnschedulable = true
+		}
+		finalStatus.code = s.Code()
+		for _, r := range s.reasons {
+			finalStatus.AppendReason(r)
+		}
+	}
+
+	if hasError {
+		finalStatus.code = Error
+	} else if hasUnschedulableAndUnresolvable {
+		finalStatus.code = UnschedulableAndUnresolvable
+	} else if hasUnschedulable {
+		finalStatus.code = Unschedulable
+	}
+	return finalStatus
+}
+
 // WaitingPod represents a pod currently waiting in the permit phase.
 type WaitingPod interface {
 	// GetPod returns a reference to the waiting pod.
@@ -164,11 +202,9 @@ type WaitingPod interface {
 	// Allow declares the waiting pod is allowed to be scheduled by plugin pluginName.
 	// If this is the last remaining plugin to allow, then a success signal is delivered
 	// to unblock the pod.
-	// Returns true if the allow signal was successfully dealt with, false otherwise.
-	Allow(pluginName string) bool
-	// Reject declares the waiting pod unschedulable. Returns true if the reject signal
-	// was successfully delivered, false otherwise.
-	Reject(msg string) bool
+	Allow(pluginName string)
+	// Reject declares the waiting pod unschedulable.
+	Reject(msg string)
 }
 
 // Plugin is the parent type for all the scheduling framework plugins.
@@ -266,17 +302,17 @@ type FilterPlugin interface {
 	Filter(ctx context.Context, state *CycleState, pod *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo) *Status
 }
 
-// PostFilterPlugin is an interface for Post-filter plugin. Post-filter is an
+// PreScorePlugin is an interface for Pre-score plugin. Pre-score is an
 // informational extension point. Plugins will be called with a list of nodes
 // that passed the filtering phase. A plugin may use this data to update internal
 // state or to generate logs/metrics.
-type PostFilterPlugin interface {
+type PreScorePlugin interface {
 	Plugin
-	// PostFilter is called by the scheduling framework after a list of nodes
-	// passed the filtering phase. All postfilter plugins must return success or
+	// PreScore is called by the scheduling framework after a list of nodes
+	// passed the filtering phase. All prescore plugins must return success or
 	// the pod will be rejected. The filteredNodesStatuses is the set of filtered nodes
 	// and their filter status.
-	PostFilter(ctx context.Context, state *CycleState, pod *v1.Pod, nodes []*v1.Node, filteredNodesStatuses NodeToStatusMap) *Status
+	PreScore(ctx context.Context, state *CycleState, pod *v1.Pod, nodes []*v1.Node, filteredNodesStatuses NodeToStatusMap) *Status
 }
 
 // ScoreExtensions is an interface for Score extended functionality.
@@ -390,7 +426,7 @@ type Framework interface {
 	// preemption, we may pass a copy of the original nodeInfo object that has some pods
 	// removed from it to evaluate the possibility of preempting them to
 	// schedule the target pod.
-	RunFilterPlugins(ctx context.Context, state *CycleState, pod *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo) *Status
+	RunFilterPlugins(ctx context.Context, state *CycleState, pod *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo) PluginToStatus
 
 	// RunPreFilterExtensionAddPod calls the AddPod interface for the set of configured
 	// PreFilter plugins. It returns directly if any of the plugins return any
@@ -402,10 +438,10 @@ type Framework interface {
 	// status other than Success.
 	RunPreFilterExtensionRemovePod(ctx context.Context, state *CycleState, podToSchedule *v1.Pod, podToAdd *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo) *Status
 
-	// RunPostFilterPlugins runs the set of configured post-filter plugins. If any
-	// of these plugins returns any status other than "Success", the given node is
+	// RunPreScorePlugins runs the set of configured pre-score plugins. If any
+	// of these plugins returns any status other than "Success", the given pod is
 	// rejected. The filteredNodeStatuses is the set of filtered nodes and their statuses.
-	RunPostFilterPlugins(ctx context.Context, state *CycleState, pod *v1.Pod, nodes []*v1.Node, filteredNodesStatuses NodeToStatusMap) *Status
+	RunPreScorePlugins(ctx context.Context, state *CycleState, pod *v1.Pod, nodes []*v1.Node, filteredNodesStatuses NodeToStatusMap) *Status
 
 	// RunScorePlugins runs the set of configured scoring plugins. It returns a map that
 	// stores for each scoring plugin name the corresponding NodeScoreList(s).
@@ -442,9 +478,9 @@ type Framework interface {
 
 	// RunBindPlugins runs the set of configured bind plugins. A bind plugin may choose
 	// whether or not to handle the given Pod. If a bind plugin chooses to skip the
-	// binding, it should return code=4("skip") status. Otherwise, it should return "Error"
+	// binding, it should return code=5("skip") status. Otherwise, it should return "Error"
 	// or "Success". If none of the plugins handled binding, RunBindPlugins returns
-	// code=4("skip") status.
+	// code=5("skip") status.
 	RunBindPlugins(ctx context.Context, state *CycleState, pod *v1.Pod, nodeName string) *Status
 
 	// HasFilterPlugins returns true if at least one filter plugin is defined.
@@ -483,4 +519,7 @@ type FrameworkHandle interface {
 	ClientSet() clientset.Interface
 
 	SharedInformerFactory() informers.SharedInformerFactory
+
+	// VolumeBinder returns the volume binder used by scheduler.
+	VolumeBinder() *volumebinder.VolumeBinder
 }

@@ -80,7 +80,7 @@ const (
 	// originated from: https://github.com/kubernetes/kubernetes/blob/28e800245e/pkg/features/kube_features.go#L178
 	serviceNodeExclusionFeature = "ServiceNodeExclusion"
 
-	// legacyNodeRoleBehaviro is the feature gate name that enables legacy
+	// legacyNodeRoleBehaviorFeature is the feature gate name that enables legacy
 	// behavior to vary cluster functionality on the node-role.kubernetes.io
 	// labels.
 	legacyNodeRoleBehaviorFeature = "LegacyNodeRoleBehavior"
@@ -804,6 +804,7 @@ func (s *Controller) addFinalizer(service *v1.Service) error {
 	updated.ObjectMeta.Finalizers = append(updated.ObjectMeta.Finalizers, servicehelper.LoadBalancerCleanupFinalizer)
 
 	klog.V(2).Infof("Adding finalizer to service %s/%s", updated.Namespace, updated.Name)
+	// TODO(87447) use PatchService from k8s.io/cloud-provider/service/helpers
 	_, err := patch(s.kubeClient.CoreV1(), service, updated)
 	return err
 }

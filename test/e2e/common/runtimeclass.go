@@ -17,6 +17,7 @@ limitations under the License.
 package common
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/events"
 	runtimeclasstest "k8s.io/kubernetes/pkg/kubelet/runtimeclass/testing"
 	"k8s.io/kubernetes/test/e2e/framework"
+	e2eevents "k8s.io/kubernetes/test/e2e/framework/events"
 	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	imageutils "k8s.io/kubernetes/test/utils/image"
 	utilpointer "k8s.io/utils/pointer"
@@ -65,12 +67,12 @@ var _ = ginkgo.Describe("[sig-node] RuntimeClass", func() {
 		rcClient := f.ClientSet.NodeV1beta1().RuntimeClasses()
 
 		ginkgo.By("Deleting RuntimeClass "+rcName, func() {
-			err := rcClient.Delete(rcName, nil)
+			err := rcClient.Delete(context.TODO(), rcName, nil)
 			framework.ExpectNoError(err, "failed to delete RuntimeClass %s", rcName)
 
 			ginkgo.By("Waiting for the RuntimeClass to disappear")
 			framework.ExpectNoError(wait.PollImmediate(framework.Poll, time.Minute, func() (bool, error) {
-				_, err := rcClient.Get(rcName, metav1.GetOptions{})
+				_, err := rcClient.Get(context.TODO(), rcName, metav1.GetOptions{})
 				if apierrors.IsNotFound(err) {
 					return true, nil // done
 				}
@@ -90,7 +92,7 @@ var _ = ginkgo.Describe("[sig-node] RuntimeClass", func() {
 func createRuntimeClass(f *framework.Framework, name, handler string) string {
 	uniqueName := fmt.Sprintf("%s-%s", f.Namespace.Name, name)
 	rc := runtimeclasstest.NewRuntimeClass(uniqueName, handler)
-	rc, err := f.ClientSet.NodeV1beta1().RuntimeClasses().Create(rc)
+	rc, err := f.ClientSet.NodeV1beta1().RuntimeClasses().Create(context.TODO(), rc, metav1.CreateOptions{})
 	framework.ExpectNoError(err, "failed to create RuntimeClass resource")
 	return rc.GetName()
 }
@@ -121,7 +123,7 @@ func expectPodRejection(f *framework.Framework, pod *v1.Pod) {
 		pod = f.PodClient().Create(pod)
 		expectSandboxFailureEvent(f, pod, fmt.Sprintf("\"%s\" not found", *pod.Spec.RuntimeClassName))
 	} else {
-		_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(pod)
+		_, err := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Create(context.TODO(), pod, metav1.CreateOptions{})
 		framework.ExpectError(err, "should be forbidden")
 		framework.ExpectEqual(apierrors.IsForbidden(err), true, "should be forbidden error")
 	}
@@ -142,6 +144,6 @@ func expectSandboxFailureEvent(f *framework.Framework, pod *v1.Pod, msg string) 
 		"involvedObject.namespace": f.Namespace.Name,
 		"reason":                   events.FailedCreatePodSandBox,
 	}.AsSelector().String()
-	framework.ExpectNoError(WaitTimeoutForEvent(
+	framework.ExpectNoError(e2eevents.WaitTimeoutForEvent(
 		f.ClientSet, f.Namespace.Name, eventSelector, msg, framework.PodEventTimeout))
 }

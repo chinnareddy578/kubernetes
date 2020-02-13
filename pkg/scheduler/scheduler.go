@@ -24,8 +24,6 @@ import (
 	"os"
 	"time"
 
-	"k8s.io/klog"
-
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -36,6 +34,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/klog"
 	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
 	kubefeatures "k8s.io/kubernetes/pkg/features"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
@@ -46,7 +45,6 @@ import (
 	internalcache "k8s.io/kubernetes/pkg/scheduler/internal/cache"
 	internalqueue "k8s.io/kubernetes/pkg/scheduler/internal/queue"
 	"k8s.io/kubernetes/pkg/scheduler/metrics"
-	nodeinfosnapshot "k8s.io/kubernetes/pkg/scheduler/nodeinfo/snapshot"
 	"k8s.io/kubernetes/pkg/scheduler/volumebinder"
 )
 
@@ -55,8 +53,8 @@ const (
 	BindTimeoutSeconds = 100
 	// SchedulerError is the reason recorded for events when an error occurs during scheduling a pod.
 	SchedulerError = "SchedulerError"
-	// Percentage of framework metrics to be sampled.
-	frameworkMetricsSamplePercent = 10
+	// Percentage of plugin metrics to be sampled.
+	pluginMetricsSamplePercent = 10
 )
 
 // podConditionUpdater updates the condition of a pod based on the passed
@@ -84,7 +82,6 @@ type Scheduler struct {
 	SchedulerCache internalcache.Cache
 
 	Algorithm core.ScheduleAlgorithm
-	GetBinder func(pod *v1.Pod) Binder
 	// PodConditionUpdater is used only in case of scheduling errors. If we succeed
 	// with scheduling, PodScheduled condition will be updated in apiserver in /bind
 	// handler so that binding and setting PodCondition it is atomic.
@@ -121,10 +118,6 @@ type Scheduler struct {
 	SchedulingQueue internalqueue.SchedulingQueue
 
 	scheduledPodsHasSynced func() bool
-
-	// The final configuration of the framework.
-	Plugins      schedulerapi.Plugins
-	PluginConfig []schedulerapi.PluginConfig
 }
 
 // Cache returns the cache in scheduler for test to check the data in scheduler.
@@ -141,13 +134,11 @@ type schedulerOptions struct {
 	bindTimeoutSeconds             int64
 	podInitialBackoffSeconds       int64
 	podMaxBackoffSeconds           int64
-	// Contains all in-tree plugins.
-	frameworkInTreeRegistry framework.Registry
-	// This registry contains out of tree plugins to be merged with the in-tree registry.
-	frameworkOutOfTreeRegistry      framework.Registry
-	frameworkConfigProducerRegistry *frameworkplugins.ConfigProducerRegistry
-	frameworkPlugins                *schedulerapi.Plugins
-	frameworkPluginConfig           []schedulerapi.PluginConfig
+	// Contains out-of-tree plugins to be merged with the in-tree registry.
+	frameworkOutOfTreeRegistry framework.Registry
+	// Plugins and PluginConfig set from ComponentConfig.
+	frameworkPlugins      *schedulerapi.Plugins
+	frameworkPluginConfig []schedulerapi.PluginConfig
 }
 
 // Option configures a Scheduler
@@ -195,25 +186,11 @@ func WithBindTimeoutSeconds(bindTimeoutSeconds int64) Option {
 	}
 }
 
-// WithFrameworkInTreeRegistry sets the framework's in-tree registry. This is only used in integration tests.
-func WithFrameworkInTreeRegistry(registry framework.Registry) Option {
-	return func(o *schedulerOptions) {
-		o.frameworkInTreeRegistry = registry
-	}
-}
-
 // WithFrameworkOutOfTreeRegistry sets the registry for out-of-tree plugins. Those plugins
 // will be appended to the default registry.
 func WithFrameworkOutOfTreeRegistry(registry framework.Registry) Option {
 	return func(o *schedulerOptions) {
 		o.frameworkOutOfTreeRegistry = registry
-	}
-}
-
-// WithFrameworkConfigProducerRegistry sets the framework plugin producer registry.
-func WithFrameworkConfigProducerRegistry(registry *frameworkplugins.ConfigProducerRegistry) Option {
-	return func(o *schedulerOptions) {
-		o.frameworkConfigProducerRegistry = registry
 	}
 }
 
@@ -250,22 +227,12 @@ var defaultSchedulerOptions = schedulerOptions{
 	schedulerAlgorithmSource: schedulerapi.SchedulerAlgorithmSource{
 		Provider: defaultAlgorithmSourceProviderName(),
 	},
-	hardPodAffinitySymmetricWeight:  v1.DefaultHardPodAffinitySymmetricWeight,
-	disablePreemption:               false,
-	percentageOfNodesToScore:        schedulerapi.DefaultPercentageOfNodesToScore,
-	bindTimeoutSeconds:              BindTimeoutSeconds,
-	podInitialBackoffSeconds:        int64(internalqueue.DefaultPodInitialBackoffDuration.Seconds()),
-	podMaxBackoffSeconds:            int64(internalqueue.DefaultPodMaxBackoffDuration.Seconds()),
-	frameworkConfigProducerRegistry: frameworkplugins.NewConfigProducerRegistry(),
-	// The plugins and pluginConfig options are currently nil because we currently don't have
-	// "default" plugins. All plugins that we run through the framework currently come from two
-	// sources: 1) specified in component config, in which case those two options should be
-	// set using their corresponding With* functions, 2) predicate/priority-mapped plugins, which
-	// pluginConfigProducerRegistry contains a mapping for and produces their configurations.
-	// TODO(ahg-g) Once predicates and priorities are migrated to natively run as plugins, the
-	// below two parameters will be populated accordingly.
-	frameworkPlugins:      nil,
-	frameworkPluginConfig: nil,
+	hardPodAffinitySymmetricWeight: v1.DefaultHardPodAffinitySymmetricWeight,
+	disablePreemption:              false,
+	percentageOfNodesToScore:       schedulerapi.DefaultPercentageOfNodesToScore,
+	bindTimeoutSeconds:             BindTimeoutSeconds,
+	podInitialBackoffSeconds:       int64(internalqueue.DefaultPodInitialBackoffDuration.Seconds()),
+	podMaxBackoffSeconds:           int64(internalqueue.DefaultPodMaxBackoffDuration.Seconds()),
 }
 
 // New returns a Scheduler
@@ -297,17 +264,12 @@ func New(client clientset.Interface,
 		time.Duration(options.bindTimeoutSeconds)*time.Second,
 	)
 
-	registry := options.frameworkInTreeRegistry
-	if registry == nil {
-		registry = frameworkplugins.NewInTreeRegistry(&frameworkplugins.RegistryArgs{
-			VolumeBinder: volumeBinder,
-		})
-	}
+	registry := frameworkplugins.NewInTreeRegistry()
 	if err := registry.Merge(options.frameworkOutOfTreeRegistry); err != nil {
 		return nil, err
 	}
 
-	snapshot := nodeinfosnapshot.NewEmptySnapshot()
+	snapshot := internalcache.NewEmptySnapshot()
 
 	configurator := &Configurator{
 		client:                         client,
@@ -326,23 +288,17 @@ func New(client clientset.Interface,
 		registry:                       registry,
 		plugins:                        options.frameworkPlugins,
 		pluginConfig:                   options.frameworkPluginConfig,
-		pluginConfigProducerRegistry:   options.frameworkConfigProducerRegistry,
 		nodeInfoSnapshot:               snapshot,
-		algorithmFactoryArgs: AlgorithmFactoryArgs{
-			SharedLister:                   snapshot,
-			InformerFactory:                informerFactory,
-			VolumeBinder:                   volumeBinder,
-			HardPodAffinitySymmetricWeight: options.hardPodAffinitySymmetricWeight,
-		},
-		configProducerArgs: &frameworkplugins.ConfigProducerArgs{},
 	}
+
+	metrics.Register()
 
 	var sched *Scheduler
 	source := options.schedulerAlgorithmSource
 	switch {
 	case source.Provider != nil:
 		// Create the config from a named algorithm provider.
-		sc, err := configurator.CreateFromProvider(*source.Provider)
+		sc, err := configurator.createFromProvider(*source.Provider)
 		if err != nil {
 			return nil, fmt.Errorf("couldn't create scheduler using provider %q: %v", *source.Provider, err)
 		}
@@ -360,7 +316,7 @@ func New(client clientset.Interface,
 				return nil, err
 			}
 		}
-		sc, err := configurator.CreateFromConfig(*policy)
+		sc, err := configurator.createFromConfig(*policy)
 		if err != nil {
 			return nil, fmt.Errorf("couldn't create scheduler from policy: %v", err)
 		}
@@ -368,7 +324,6 @@ func New(client clientset.Interface,
 	default:
 		return nil, fmt.Errorf("unsupported algorithm source: %v", source)
 	}
-	metrics.Register()
 	// Additional tweaks to the config produced by the configurator.
 	sched.Recorder = recorder
 	sched.DisablePreemption = options.disablePreemption
@@ -402,7 +357,7 @@ func initPolicyFromFile(policyFile string, policy *schedulerapi.Policy) error {
 // initPolicyFromConfigMap initialize policy from configMap
 func initPolicyFromConfigMap(client clientset.Interface, policyRef *schedulerapi.SchedulerPolicyConfigMapSource, policy *schedulerapi.Policy) error {
 	// Use a policy serialized in a config map value.
-	policyConfigMap, err := client.CoreV1().ConfigMaps(policyRef.Namespace).Get(policyRef.Name, metav1.GetOptions{})
+	policyConfigMap, err := client.CoreV1().ConfigMaps(policyRef.Namespace).Get(context.TODO(), policyRef.Name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("couldn't get policy config map %s/%s: %v", policyRef.Namespace, policyRef.Name, err)
 	}
@@ -548,28 +503,44 @@ func (sched *Scheduler) assume(assumed *v1.Pod, host string) error {
 	return nil
 }
 
-// bind binds a pod to a given node defined in a binding object.  We expect this to run asynchronously, so we
-// handle binding metrics internally.
-func (sched *Scheduler) bind(ctx context.Context, assumed *v1.Pod, targetNode string, state *framework.CycleState) error {
-	bindingStart := time.Now()
-	bindStatus := sched.Framework.RunBindPlugins(ctx, state, assumed, targetNode)
-	var err error
-	if !bindStatus.IsSuccess() {
-		if bindStatus.Code() == framework.Skip {
-			// All bind plugins chose to skip binding of this pod, call original binding function.
-			// If binding succeeds then PodScheduled condition will be updated in apiserver so that
-			// it's atomic with setting host.
-			err = sched.GetBinder(assumed).Bind(&v1.Binding{
-				ObjectMeta: metav1.ObjectMeta{Namespace: assumed.Namespace, Name: assumed.Name, UID: assumed.UID},
-				Target: v1.ObjectReference{
-					Kind: "Node",
-					Name: targetNode,
-				},
-			})
-		} else {
-			err = fmt.Errorf("Bind failure, code: %d: %v", bindStatus.Code(), bindStatus.Message())
-		}
+// bind binds a pod to a given node defined in a binding object.
+// The precedence for binding is: (1) extenders and (2) framework plugins.
+// We expect this to run asynchronously, so we handle binding metrics internally.
+func (sched *Scheduler) bind(ctx context.Context, assumed *v1.Pod, targetNode string, state *framework.CycleState) (err error) {
+	start := time.Now()
+	defer func() {
+		sched.finishBinding(assumed, targetNode, start, err)
+	}()
+
+	bound, err := sched.extendersBinding(assumed, targetNode)
+	if bound {
+		return err
 	}
+	bindStatus := sched.Framework.RunBindPlugins(ctx, state, assumed, targetNode)
+	if bindStatus.IsSuccess() {
+		return nil
+	}
+	if bindStatus.Code() == framework.Error {
+		return bindStatus.AsError()
+	}
+	return fmt.Errorf("bind status: %s, %v", bindStatus.Code().String(), bindStatus.Message())
+}
+
+// TODO(#87159): Move this to a Plugin.
+func (sched *Scheduler) extendersBinding(pod *v1.Pod, node string) (bool, error) {
+	for _, extender := range sched.Algorithm.Extenders() {
+		if !extender.IsBinder() || !extender.IsInterested(pod) {
+			continue
+		}
+		return true, extender.Bind(&v1.Binding{
+			ObjectMeta: metav1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Name, UID: pod.UID},
+			Target:     v1.ObjectReference{Kind: "Node", Name: node},
+		})
+	}
+	return false, nil
+}
+
+func (sched *Scheduler) finishBinding(assumed *v1.Pod, targetNode string, start time.Time, err error) {
 	if finErr := sched.SchedulerCache.FinishBinding(assumed); finErr != nil {
 		klog.Errorf("scheduler cache FinishBinding failed: %v", finErr)
 	}
@@ -578,15 +549,12 @@ func (sched *Scheduler) bind(ctx context.Context, assumed *v1.Pod, targetNode st
 		if err := sched.SchedulerCache.ForgetPod(assumed); err != nil {
 			klog.Errorf("scheduler cache ForgetPod failed: %v", err)
 		}
-		return err
+		return
 	}
 
-	metrics.BindingLatency.Observe(metrics.SinceInSeconds(bindingStart))
-	metrics.DeprecatedBindingLatency.Observe(metrics.SinceInMicroseconds(bindingStart))
-	metrics.SchedulingLatency.WithLabelValues(metrics.Binding).Observe(metrics.SinceInSeconds(bindingStart))
-	metrics.DeprecatedSchedulingLatency.WithLabelValues(metrics.Binding).Observe(metrics.SinceInSeconds(bindingStart))
+	metrics.BindingLatency.Observe(metrics.SinceInSeconds(start))
+	metrics.DeprecatedSchedulingDuration.WithLabelValues(metrics.Binding).Observe(metrics.SinceInSeconds(start))
 	sched.Recorder.Eventf(assumed, nil, v1.EventTypeNormal, "Scheduled", "Binding", "Successfully assigned %v/%v to %v", assumed.Namespace, assumed.Name, targetNode)
-	return nil
 }
 
 // scheduleOne does the entire scheduling workflow for a single pod.  It is serialized on the scheduling algorithm's host fitting.
@@ -599,9 +567,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		return
 	}
 	pod := podInfo.Pod
-	if pod.DeletionTimestamp != nil {
-		sched.Recorder.Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", "skip schedule deleting pod: %v/%v", pod.Namespace, pod.Name)
-		klog.V(3).Infof("Skip schedule deleting pod: %v/%v", pod.Namespace, pod.Name)
+	if sched.skipPodSchedule(pod) {
 		return
 	}
 
@@ -610,7 +576,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	// Synchronously attempt to find a fit for the pod.
 	start := time.Now()
 	state := framework.NewCycleState()
-	state.SetRecordFrameworkMetrics(rand.Intn(100) < frameworkMetricsSamplePercent)
+	state.SetRecordPluginMetrics(rand.Intn(100) < pluginMetricsSamplePercent)
 	schedulingCycleCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	scheduleResult, err := sched.Algorithm.Schedule(schedulingCycleCtx, state, pod)
@@ -629,9 +595,7 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 				sched.preempt(schedulingCycleCtx, state, fwk, pod, fitError)
 				metrics.PreemptionAttempts.Inc()
 				metrics.SchedulingAlgorithmPreemptionEvaluationDuration.Observe(metrics.SinceInSeconds(preemptionStartTime))
-				metrics.DeprecatedSchedulingAlgorithmPreemptionEvaluationDuration.Observe(metrics.SinceInMicroseconds(preemptionStartTime))
-				metrics.SchedulingLatency.WithLabelValues(metrics.PreemptionEvaluation).Observe(metrics.SinceInSeconds(preemptionStartTime))
-				metrics.DeprecatedSchedulingLatency.WithLabelValues(metrics.PreemptionEvaluation).Observe(metrics.SinceInSeconds(preemptionStartTime))
+				metrics.DeprecatedSchedulingDuration.WithLabelValues(metrics.PreemptionEvaluation).Observe(metrics.SinceInSeconds(preemptionStartTime))
 			}
 			// Pod did not fit anywhere, so it is counted as a failure. If preemption
 			// succeeds, the pod should get counted as a success the next time we try to
@@ -644,7 +608,6 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 		return
 	}
 	metrics.SchedulingAlgorithmLatency.Observe(metrics.SinceInSeconds(start))
-	metrics.DeprecatedSchedulingAlgorithmLatency.Observe(metrics.SinceInMicroseconds(start))
 	// Tell the cache to assume that a pod now is running on a given node, even though it hasn't been bound yet.
 	// This allows us to keep scheduling without waiting on binding to occur.
 	assumedPodInfo := podInfo.DeepCopy()
@@ -742,7 +705,6 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 
 		err := sched.bind(bindingCycleCtx, assumedPod, scheduleResult.SuggestedHost, state)
 		metrics.E2eSchedulingLatency.Observe(metrics.SinceInSeconds(start))
-		metrics.DeprecatedE2eSchedulingLatency.Observe(metrics.SinceInMicroseconds(start))
 		if err != nil {
 			metrics.PodScheduleErrors.Inc()
 			// trigger un-reserve plugins to clean up state associated with the reserved Pod
@@ -764,6 +726,25 @@ func (sched *Scheduler) scheduleOne(ctx context.Context) {
 	}()
 }
 
+// skipPodSchedule returns true if we could skip scheduling the pod for specified cases.
+func (sched *Scheduler) skipPodSchedule(pod *v1.Pod) bool {
+	// Case 1: pod is being deleted.
+	if pod.DeletionTimestamp != nil {
+		sched.Recorder.Eventf(pod, nil, v1.EventTypeWarning, "FailedScheduling", "Scheduling", "skip schedule deleting pod: %v/%v", pod.Namespace, pod.Name)
+		klog.V(3).Infof("Skip schedule deleting pod: %v/%v", pod.Namespace, pod.Name)
+		return true
+	}
+
+	// Case 2: pod has been assumed and pod updates could be skipped.
+	// An assumed pod can be added again to the scheduling queue if it got an update event
+	// during its previous scheduling cycle but before getting assumed.
+	if sched.skipPodUpdate(pod) {
+		return true
+	}
+
+	return false
+}
+
 type podConditionUpdaterImpl struct {
 	Client clientset.Interface
 }
@@ -771,7 +752,7 @@ type podConditionUpdaterImpl struct {
 func (p *podConditionUpdaterImpl) update(pod *v1.Pod, condition *v1.PodCondition) error {
 	klog.V(3).Infof("Updating pod condition for %s/%s to (%s==%s, Reason=%s)", pod.Namespace, pod.Name, condition.Type, condition.Status, condition.Reason)
 	if podutil.UpdatePodCondition(&pod.Status, condition) {
-		_, err := p.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(pod)
+		_, err := p.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(context.TODO(), pod, metav1.UpdateOptions{})
 		return err
 	}
 	return nil
@@ -782,17 +763,17 @@ type podPreemptorImpl struct {
 }
 
 func (p *podPreemptorImpl) getUpdatedPod(pod *v1.Pod) (*v1.Pod, error) {
-	return p.Client.CoreV1().Pods(pod.Namespace).Get(pod.Name, metav1.GetOptions{})
+	return p.Client.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 }
 
 func (p *podPreemptorImpl) deletePod(pod *v1.Pod) error {
-	return p.Client.CoreV1().Pods(pod.Namespace).Delete(pod.Name, &metav1.DeleteOptions{})
+	return p.Client.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, &metav1.DeleteOptions{})
 }
 
 func (p *podPreemptorImpl) setNominatedNodeName(pod *v1.Pod, nominatedNodeName string) error {
 	podCopy := pod.DeepCopy()
 	podCopy.Status.NominatedNodeName = nominatedNodeName
-	_, err := p.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(podCopy)
+	_, err := p.Client.CoreV1().Pods(pod.Namespace).UpdateStatus(context.TODO(), podCopy, metav1.UpdateOptions{})
 	return err
 }
 
