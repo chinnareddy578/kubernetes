@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
@@ -35,7 +36,7 @@ import (
 	"k8s.io/component-base/featuregate"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	csitrans "k8s.io/csi-translation-lib"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/controller"
 	pvtesting "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/testing"
 	pvutil "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/util"
@@ -160,11 +161,15 @@ func TestControllerSync(t *testing.T) {
 				for len(ctrl.claims.ListKeys()) > 0 {
 					time.Sleep(10 * time.Millisecond)
 				}
-				// make sure the operation timestamp cache is NOT empty
-				if !ctrl.operationTimestamps.Has("volume5-6") {
-					return errors.New("failed checking timestamp cache: should not be empty")
-				}
-				return nil
+				// wait for volume delete operation to appear once volumeWorker() runs
+				return wait.PollImmediate(10*time.Millisecond, wait.ForeverTestTimeout, func() (bool, error) {
+					// make sure the operation timestamp cache is NOT empty
+					if ctrl.operationTimestamps.Has("volume5-6") {
+						return true, nil
+					}
+					t.Logf("missing volume5-6 from timestamp cache, will retry")
+					return false, nil
+				})
 			},
 		},
 		{
@@ -230,6 +235,21 @@ func TestControllerSync(t *testing.T) {
 				if ctrl.operationTimestamps.Has("default/claim5-8") {
 					return errors.New("failed checking timestamp cache")
 				}
+				return nil
+			},
+		},
+		{
+			// delete success(?) - volume has deletion timestamp before doDelete() starts
+			"8-13 - volume is has deletion timestamp and is not processed",
+			withVolumeDeletionTimestamp(newVolumeArray("volume8-13", "1Gi", "uid8-13", "claim8-13", v1.VolumeBound, v1.PersistentVolumeReclaimDelete, classEmpty)),
+			withVolumeDeletionTimestamp(newVolumeArray("volume8-13", "1Gi", "uid8-13", "claim8-13", v1.VolumeReleased, v1.PersistentVolumeReclaimDelete, classEmpty)),
+			noclaims,
+			noclaims,
+			noevents, noerrors,
+			// We don't need to do anything in test function because deletion will be noticed automatically and synced.
+			// Attempting to use testSyncVolume here will cause an error because of race condition between manually
+			// calling testSyncVolume and volume loop running.
+			func(ctrl *PersistentVolumeController, reactor *pvtesting.VolumeReactor, test controllerTest) error {
 				return nil
 			},
 		},

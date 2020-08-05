@@ -42,6 +42,7 @@ import (
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2emetrics "k8s.io/kubernetes/test/e2e/framework/metrics"
 	e2enode "k8s.io/kubernetes/test/e2e/framework/node"
+	e2epod "k8s.io/kubernetes/test/e2e/framework/pod"
 	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 
 	"github.com/onsi/ginkgo"
@@ -79,24 +80,34 @@ func estimateMaximumPods(c clientset.Interface, min, max int32) int32 {
 	return availablePods
 }
 
-func getForegroundOptions() *metav1.DeleteOptions {
+func getForegroundOptions() metav1.DeleteOptions {
 	policy := metav1.DeletePropagationForeground
-	return &metav1.DeleteOptions{PropagationPolicy: &policy}
+	return metav1.DeleteOptions{PropagationPolicy: &policy}
 }
 
-func getBackgroundOptions() *metav1.DeleteOptions {
+func getBackgroundOptions() metav1.DeleteOptions {
 	policy := metav1.DeletePropagationBackground
-	return &metav1.DeleteOptions{PropagationPolicy: &policy}
+	return metav1.DeleteOptions{PropagationPolicy: &policy}
 }
 
-func getOrphanOptions() *metav1.DeleteOptions {
+func getOrphanOptions() metav1.DeleteOptions {
 	policy := metav1.DeletePropagationOrphan
-	return &metav1.DeleteOptions{PropagationPolicy: &policy}
+	return metav1.DeleteOptions{PropagationPolicy: &policy}
 }
 
 var (
 	zero       = int64(0)
 	lablecount = int64(0)
+
+	// The GC controller periodically rediscovers available APIs and syncs running informers for those resources.
+	// If previously available APIs are removed during that resync process, the sync process can fail and need to be retried.
+	//
+	// During e2e runs, parallel tests add/remove API resources (by creating/deleting CRDs and aggregated APIs),
+	// which makes it likely GC will need to retry informer resync at some point during an e2e run.
+	//
+	// This timeout covers two resync/retry periods, and should be added to wait timeouts to account for delays
+	// to the GC controller caused by API changes in other tests.
+	gcInformerResyncRetryTimeout = time.Minute
 
 	// CronJobGroupVersionResource unambiguously identifies a CronJob resource.
 	CronJobGroupVersionResource = schema.GroupVersionResource{Group: batchv1beta1.GroupName, Version: "v1beta1", Resource: "cronjobs"}
@@ -309,7 +320,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 	f := framework.NewDefaultFramework("gc")
 
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, delete replication controller, propagation policy background
 		Description: Create a replication controller with 2 Pods. Once RC is created and the first Pod is created, delete RC with deleteOptions.PropagationPolicy set to Background. Deleting the Replication Controller MUST cause pods created by that RC to be deleted.
 	*/
@@ -351,7 +362,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		}
 		ginkgo.By("wait for all pods to be garbage collected")
 		// wait for the RCs and Pods to reach the expected numbers.
-		if err := wait.Poll(5*time.Second, 60*time.Second, func() (bool, error) {
+		if err := wait.Poll(5*time.Second, (60*time.Second)+gcInformerResyncRetryTimeout, func() (bool, error) {
 			objects := map[string]int{"ReplicationControllers": 0, "Pods": 0}
 			return verifyRemainingObjects(f, objects)
 		}); err != nil {
@@ -367,7 +378,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 	})
 
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, delete replication controller, propagation policy orphan
 		Description: Create a replication controller with maximum allocatable Pods between 10 and 100 replicas. Once RC is created and the all Pods are created, delete RC with deleteOptions.PropagationPolicy set to Orphan. Deleting the Replication Controller MUST cause pods created by that RC to be orphaned.
 	*/
@@ -411,7 +422,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		// actual qps is less than 5. Also, the e2e tests are running in
 		// parallel, the GC controller might get distracted by other tests.
 		// According to the test logs, 120s is enough time.
-		if err := wait.Poll(5*time.Second, 120*time.Second, func() (bool, error) {
+		if err := wait.Poll(5*time.Second, 120*time.Second+gcInformerResyncRetryTimeout, func() (bool, error) {
 			rcs, err := rcClient.List(context.TODO(), metav1.ListOptions{})
 			if err != nil {
 				return false, fmt.Errorf("failed to list rcs: %v", err)
@@ -433,6 +444,9 @@ var _ = SIGDescribe("Garbage collector", func() {
 			framework.Failf("expect %d pods, got %d pods", e, a)
 		}
 		gatherMetrics(f)
+		if err = e2epod.DeletePodsWithGracePeriod(clientSet, pods.Items, 0); err != nil {
+			framework.Logf("WARNING: failed to delete pods: %v", err)
+		}
 	})
 
 	// deleteOptions.OrphanDependents is deprecated in 1.7 and preferred to use the PropagationPolicy.
@@ -463,8 +477,9 @@ var _ = SIGDescribe("Garbage collector", func() {
 			framework.Failf("failed to wait for the rc.Status.Replicas to reach rc.Spec.Replicas: %v", err)
 		}
 		ginkgo.By("delete the rc")
-		deleteOptions := &metav1.DeleteOptions{}
-		deleteOptions.Preconditions = metav1.NewUIDPreconditions(string(rc.UID))
+		deleteOptions := metav1.DeleteOptions{
+			Preconditions: metav1.NewUIDPreconditions(string(rc.UID)),
+		}
 		if err := rcClient.Delete(context.TODO(), rc.ObjectMeta.Name, deleteOptions); err != nil {
 			framework.Failf("failed to delete the rc: %v", err)
 		}
@@ -478,10 +493,13 @@ var _ = SIGDescribe("Garbage collector", func() {
 			framework.Failf("expect %d pods, got %d pods", e, a)
 		}
 		gatherMetrics(f)
+		if err = e2epod.DeletePodsWithGracePeriod(clientSet, pods.Items, 0); err != nil {
+			framework.Logf("WARNING: failed to delete pods: %v", err)
+		}
 	})
 
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, delete deployment,  propagation policy background
 		Description: Create a deployment with a replicaset. Once replicaset is created , delete the deployment  with deleteOptions.PropagationPolicy set to Background. Deleting the deployment MUST delete the replicaset created by the deployment and also the Pods that belong to the deployments MUST be deleted.
 	*/
@@ -518,7 +536,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 			framework.Failf("failed to delete the deployment: %v", err)
 		}
 		ginkgo.By("wait for all rs to be garbage collected")
-		err = wait.PollImmediate(500*time.Millisecond, 1*time.Minute, func() (bool, error) {
+		err = wait.PollImmediate(500*time.Millisecond, 1*time.Minute+gcInformerResyncRetryTimeout, func() (bool, error) {
 			objects := map[string]int{"Deployments": 0, "ReplicaSets": 0, "Pods": 0}
 			return verifyRemainingObjects(f, objects)
 		})
@@ -540,7 +558,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 	})
 
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, delete deployment, propagation policy orphan
 		Description: Create a deployment with a replicaset. Once replicaset is created , delete the deployment  with deleteOptions.PropagationPolicy set to Orphan. Deleting the deployment MUST cause the replicaset created by the deployment to be orphaned, also the Pods created by the deployments MUST be orphaned.
 	*/
@@ -558,16 +576,32 @@ var _ = SIGDescribe("Garbage collector", func() {
 		}
 		// wait for deployment to create some rs
 		ginkgo.By("Wait for the Deployment to create new ReplicaSet")
+		var replicaset appsv1.ReplicaSet
 		err = wait.PollImmediate(500*time.Millisecond, 1*time.Minute, func() (bool, error) {
 			rsList, err := rsClient.List(context.TODO(), metav1.ListOptions{})
 			if err != nil {
 				return false, fmt.Errorf("failed to list rs: %v", err)
 			}
-			return len(rsList.Items) > 0, nil
+			if len(rsList.Items) > 0 {
+				replicaset = rsList.Items[0]
+				return true, nil
+			}
+			return false, nil
 
 		})
 		if err != nil {
 			framework.Failf("Failed to wait for the Deployment to create some ReplicaSet: %v", err)
+		}
+
+		desiredGeneration := replicaset.Generation
+		if err := wait.PollImmediate(100*time.Millisecond, 60*time.Second, func() (bool, error) {
+			newRS, err := clientSet.AppsV1().ReplicaSets(replicaset.Namespace).Get(context.TODO(), replicaset.Name, metav1.GetOptions{})
+			if err != nil {
+				return false, err
+			}
+			return newRS.Status.ObservedGeneration >= desiredGeneration && newRS.Status.Replicas == *replicaset.Spec.Replicas, nil
+		}); err != nil {
+			framework.Failf("failed to verify .Status.Replicas is equal to .Spec.Replicas for replicaset %q: %v", replicaset.Name, err)
 		}
 
 		ginkgo.By("delete the deployment")
@@ -577,7 +611,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 			framework.Failf("failed to delete the deployment: %v", err)
 		}
 		ginkgo.By("wait for deployment deletion to see if the garbage collector mistakenly deletes the rs")
-		err = wait.PollImmediate(500*time.Millisecond, 1*time.Minute, func() (bool, error) {
+		err = wait.PollImmediate(500*time.Millisecond, 1*time.Minute+gcInformerResyncRetryTimeout, func() (bool, error) {
 			dList, err := deployClient.List(context.TODO(), metav1.ListOptions{})
 			if err != nil {
 				return false, fmt.Errorf("failed to list deployments: %v", err)
@@ -624,7 +658,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 	})
 
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, delete replication controller, after owned pods
 		Description: Create a replication controller with maximum allocatable Pods between 10 and 100 replicas. Once RC is created and the all Pods are created, delete RC with deleteOptions.PropagationPolicy set to Foreground. Deleting the Replication Controller MUST cause pods created by that RC to be deleted before the RC is deleted.
 	*/
@@ -665,7 +699,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		// owner deletion, but in practice there can be a long delay between owner
 		// deletion and dependent deletion processing. For now, increase the timeout
 		// and investigate the processing delay.
-		if err := wait.Poll(1*time.Second, 60*time.Second, func() (bool, error) {
+		if err := wait.Poll(1*time.Second, 30*time.Second+gcInformerResyncRetryTimeout, func() (bool, error) {
 			_, err := rcClient.Get(context.TODO(), rc.Name, metav1.GetOptions{})
 			if err == nil {
 				pods, _ := podClient.List(context.TODO(), metav1.ListOptions{})
@@ -709,7 +743,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 
 	// TODO: this should be an integration test
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, multiple owners
 		Description: Create a replication controller RC1, with maximum allocatable Pods between 10 and 100 replicas. Create second replication controller RC2 and set RC2 as owner for half of those replicas. Once RC1 is created and the all Pods are created, delete RC1 with deleteOptions.PropagationPolicy set to Foreground. Half of the Pods that has RC2 as owner MUST not be deleted but have a deletion timestamp. Deleting the Replication Controller MUST not delete Pods that are owned by multiple replication controllers.
 	*/
@@ -816,11 +850,14 @@ var _ = SIGDescribe("Garbage collector", func() {
 			}
 		}
 		gatherMetrics(f)
+		if err = e2epod.DeletePodsWithGracePeriod(clientSet, pods.Items, 0); err != nil {
+			framework.Logf("WARNING: failed to delete pods: %v", err)
+		}
 	})
 
 	// TODO: should be an integration test
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Garbage Collector, dependency cycle
 		Description: Create three pods, patch them with Owner references such that pod1 has pod3, pod2 has pod1 and pod3 has pod2 as owner references respectively. Delete pod1 MUST delete all pods. The dependency cycle MUST not block the garbage collection.
 	*/
@@ -864,7 +901,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		var err2 error
 		// TODO: shorten the timeout when we make GC's periodic API rediscovery more efficient.
 		// Tracked at https://github.com/kubernetes/kubernetes/issues/50046.
-		if err := wait.Poll(5*time.Second, 90*time.Second, func() (bool, error) {
+		if err := wait.Poll(5*time.Second, 90*time.Second+gcInformerResyncRetryTimeout, func() (bool, error) {
 			pods, err2 = podClient.List(context.TODO(), metav1.ListOptions{})
 			if err2 != nil {
 				return false, fmt.Errorf("failed to list pods: %v", err)
@@ -924,7 +961,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 				},
 			},
 		}
-		persistedOwner, err := resourceClient.Create(owner, metav1.CreateOptions{})
+		persistedOwner, err := resourceClient.Create(context.TODO(), owner, metav1.CreateOptions{})
 		if err != nil {
 			framework.Failf("failed to create owner resource %q: %v", ownerName, err)
 		}
@@ -949,7 +986,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 				},
 			},
 		}
-		persistedDependent, err := resourceClient.Create(dependent, metav1.CreateOptions{})
+		persistedDependent, err := resourceClient.Create(context.TODO(), dependent, metav1.CreateOptions{})
 		if err != nil {
 			framework.Failf("failed to create dependent resource %q: %v", dependentName, err)
 		}
@@ -957,7 +994,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 
 		// Delete the owner.
 		background := metav1.DeletePropagationBackground
-		err = resourceClient.Delete(ownerName, &metav1.DeleteOptions{PropagationPolicy: &background})
+		err = resourceClient.Delete(context.TODO(), ownerName, metav1.DeleteOptions{PropagationPolicy: &background})
 		if err != nil {
 			framework.Failf("failed to delete owner resource %q: %v", ownerName, err)
 		}
@@ -971,20 +1008,20 @@ var _ = SIGDescribe("Garbage collector", func() {
 				"kind":       definition.Spec.Names.Kind,
 				"metadata":   map[string]interface{}{"name": canaryName}},
 		}
-		_, err = resourceClient.Create(canary, metav1.CreateOptions{})
+		_, err = resourceClient.Create(context.TODO(), canary, metav1.CreateOptions{})
 		if err != nil {
 			framework.Failf("failed to create canary resource %q: %v", canaryName, err)
 		}
 		framework.Logf("created canary resource %q", canaryName)
 		foreground := metav1.DeletePropagationForeground
-		err = resourceClient.Delete(canaryName, &metav1.DeleteOptions{PropagationPolicy: &foreground})
+		err = resourceClient.Delete(context.TODO(), canaryName, metav1.DeleteOptions{PropagationPolicy: &foreground})
 		if err != nil {
 			framework.Failf("failed to delete canary resource %q: %v", canaryName, err)
 		}
 		// Wait for the canary foreground finalization to complete, which means GC is aware of our new custom resource type
 		var lastCanary *unstructured.Unstructured
 		if err := wait.PollImmediate(5*time.Second, 3*time.Minute, func() (bool, error) {
-			lastCanary, err = resourceClient.Get(dependentName, metav1.GetOptions{})
+			lastCanary, err = resourceClient.Get(context.TODO(), dependentName, metav1.GetOptions{})
 			return apierrors.IsNotFound(err), nil
 		}); err != nil {
 			framework.Logf("canary last state: %#v", lastCanary)
@@ -995,7 +1032,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		var lastDependent *unstructured.Unstructured
 		var err2 error
 		if err := wait.Poll(5*time.Second, 60*time.Second, func() (bool, error) {
-			lastDependent, err2 = resourceClient.Get(dependentName, metav1.GetOptions{})
+			lastDependent, err2 = resourceClient.Get(context.TODO(), dependentName, metav1.GetOptions{})
 			return apierrors.IsNotFound(err2), nil
 		}); err != nil {
 			framework.Logf("owner: %#v", persistedOwner)
@@ -1005,7 +1042,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		}
 
 		// Ensure the owner is deleted.
-		_, err = resourceClient.Get(ownerName, metav1.GetOptions{})
+		_, err = resourceClient.Get(context.TODO(), ownerName, metav1.GetOptions{})
 		if err == nil {
 			framework.Failf("expected owner resource %q to be deleted", ownerName)
 		} else {
@@ -1059,7 +1096,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 				},
 			},
 		}
-		persistedOwner, err := resourceClient.Create(owner, metav1.CreateOptions{})
+		persistedOwner, err := resourceClient.Create(context.TODO(), owner, metav1.CreateOptions{})
 		if err != nil {
 			framework.Failf("failed to create owner resource %q: %v", ownerName, err)
 		}
@@ -1084,21 +1121,21 @@ var _ = SIGDescribe("Garbage collector", func() {
 				},
 			},
 		}
-		_, err = resourceClient.Create(dependent, metav1.CreateOptions{})
+		_, err = resourceClient.Create(context.TODO(), dependent, metav1.CreateOptions{})
 		if err != nil {
 			framework.Failf("failed to create dependent resource %q: %v", dependentName, err)
 		}
 		framework.Logf("created dependent resource %q", dependentName)
 
 		// Delete the owner and orphan the dependent.
-		err = resourceClient.Delete(ownerName, getOrphanOptions())
+		err = resourceClient.Delete(context.TODO(), ownerName, getOrphanOptions())
 		if err != nil {
 			framework.Failf("failed to delete owner resource %q: %v", ownerName, err)
 		}
 
 		ginkgo.By("wait for the owner to be deleted")
 		if err := wait.Poll(5*time.Second, 120*time.Second, func() (bool, error) {
-			_, err = resourceClient.Get(ownerName, metav1.GetOptions{})
+			_, err = resourceClient.Get(context.TODO(), ownerName, metav1.GetOptions{})
 			if err == nil {
 				return false, nil
 			}
@@ -1113,7 +1150,7 @@ var _ = SIGDescribe("Garbage collector", func() {
 		// Wait 30s and ensure the dependent is not deleted.
 		ginkgo.By("wait for 30 seconds to see if the garbage collector mistakenly deletes the dependent crd")
 		if err := wait.Poll(5*time.Second, 30*time.Second, func() (bool, error) {
-			_, err := resourceClient.Get(dependentName, metav1.GetOptions{})
+			_, err := resourceClient.Get(context.TODO(), dependentName, metav1.GetOptions{})
 			return false, err
 		}); err != nil && err != wait.ErrWaitTimeout {
 			framework.Failf("failed to ensure the dependent is not deleted: %v", err)

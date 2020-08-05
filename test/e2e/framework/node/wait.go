@@ -28,7 +28,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 	e2elog "k8s.io/kubernetes/test/e2e/framework/log"
-	"k8s.io/kubernetes/test/e2e/system"
 	testutils "k8s.io/kubernetes/test/utils"
 )
 
@@ -84,7 +83,7 @@ func WaitForTotalHealthy(c clientset.Interface, timeout time.Duration) error {
 		}
 		missingPodsPerNode = make(map[string][]string)
 		for _, node := range nodes.Items {
-			if !system.DeprecatedMightBeMasterNode(node.Name) {
+			if isNodeSchedulableWithoutTaints(&node) {
 				for _, requiredPod := range requiredPerNodePods {
 					foundRequired := false
 					for _, presentPod := range systemPodsPerNode[node.Name] {
@@ -164,7 +163,7 @@ func CheckReady(c clientset.Interface, size int, timeout time.Duration) ([]v1.No
 		// Filter out not-ready nodes.
 		Filter(nodes, func(node v1.Node) bool {
 			nodeReady := IsConditionSetAsExpected(&node, v1.NodeReady, true)
-			networkReady := IsConditionUnset(&node, v1.NodeNetworkUnavailable) || IsConditionSetAsExpected(&node, v1.NodeNetworkUnavailable, false)
+			networkReady := isConditionUnset(&node, v1.NodeNetworkUnavailable) || IsConditionSetAsExpected(&node, v1.NodeNetworkUnavailable, false)
 			return nodeReady && networkReady
 		})
 		numReady := len(nodes.Items)
@@ -274,7 +273,7 @@ func readyForTests(node *v1.Node, nonblockingTaints string) bool {
 			return false
 		}
 	} else {
-		if !IsNodeSchedulable(node) || !IsNodeUntainted(node) {
+		if !IsNodeSchedulable(node) || !isNodeUntainted(node) {
 			return false
 		}
 	}

@@ -80,6 +80,9 @@ run_pod_tests() {
   kube::test::get_object_assert 'pod valid-pod' "{{$id_field}}" 'valid-pod'
   kube::test::get_object_assert 'pod/valid-pod' "{{$id_field}}" 'valid-pod'
   kube::test::get_object_assert 'pods/valid-pod' "{{$id_field}}" 'valid-pod'
+  # pod has field manager for kubectl create
+  output_message=$(kubectl get -f test/fixtures/doc-yaml/admin/limitrange/valid-pod.yaml -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-create'
   # Repeat above test using jsonpath template
   kube::test::get_object_jsonpath_assert pods "{.items[*]$id_field}" 'valid-pod'
   kube::test::get_object_jsonpath_assert 'pod valid-pod' "{$id_field}" 'valid-pod'
@@ -102,8 +105,6 @@ run_pod_tests() {
   kube::test::describe_resource_events_assert pods false
   # Describe command should print events information when show-events=true
   kube::test::describe_resource_events_assert pods true
-  ### Validate Export ###
-  kube::test::get_object_assert 'pods/valid-pod' "{{.metadata.namespace}} {{.metadata.name}}" '<no value> valid-pod' "--export=true"
 
   ### Dump current valid-pod POD
   output_pod=$(kubectl get pod valid-pod -o yaml "${kube_flags[@]}")
@@ -302,15 +303,15 @@ run_pod_tests() {
   kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" ''
   # Command
   kubectl create -f test/fixtures/doc-yaml/admin/limitrange/valid-pod.yaml "${kube_flags[@]}"
-  kubectl create -f test/e2e/testing-manifests/kubectl/agnhost-master-pod.yaml "${kube_flags[@]}"
-  # Post-condition: valid-pod and agnhost-master PODs are created
-  kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" 'agnhost-master:valid-pod:'
+  kubectl create -f test/e2e/testing-manifests/kubectl/agnhost-primary-pod.yaml "${kube_flags[@]}"
+  # Post-condition: valid-pod and agnhost-primary PODs are created
+  kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" 'agnhost-primary:valid-pod:'
 
   ### Delete multiple PODs at once
-  # Pre-condition: valid-pod and agnhost-master PODs exist
-  kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" 'agnhost-master:valid-pod:'
+  # Pre-condition: valid-pod and agnhost-primary PODs exist
+  kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" 'agnhost-primary:valid-pod:'
   # Command
-  kubectl delete pods valid-pod agnhost-master "${kube_flags[@]}" --grace-period=0 --force # delete multiple pods at once
+  kubectl delete pods valid-pod agnhost-primary "${kube_flags[@]}" --grace-period=0 --force # delete multiple pods at once
   # Post-condition: no POD exists
   kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" ''
 
@@ -364,6 +365,9 @@ run_pod_tests() {
   kubectl annotate pods valid-pod emptyannotation="" "${kube_flags[@]}"
   # Post-condition: valid pod contains "emptyannotation" with no value
   kube::test::get_object_assert 'pod valid-pod' "{{${annotations_field}.emptyannotation}}" ''
+  # pod has field for kubectl annotate field manager
+  output_message=$(kubectl get pod valid-pod -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-annotate'
 
   ### Record label change
   # Pre-condition: valid-pod does not have record annotation
@@ -372,6 +376,9 @@ run_pod_tests() {
   kubectl label pods valid-pod record-change=true --record=true "${kube_flags[@]}"
   # Post-condition: valid-pod has record annotation
   kube::test::get_object_assert 'pod valid-pod' "{{range$annotations_field}}{{.}}:{{end}}" ".*--record=true.*"
+  # pod has field for kubectl label field manager
+  output_message=$(kubectl get pod valid-pod -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-label'
 
   ### Do not record label change
   # Command
@@ -451,6 +458,11 @@ run_pod_tests() {
   # Post-condition: service named modified and rc named modified are created
   kube::test::get_object_assert service "{{range.items}}{{$id_field}}:{{end}}" 'modified:'
   kube::test::get_object_assert rc "{{range.items}}{{$id_field}}:{{end}}" 'modified:'
+  # resources have field manager for kubectl create
+  output_message=$(kubectl get service/modified -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-create'
+  output_message=$(kubectl get rc/modified -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-create'
   # Clean up
   kubectl delete service/modified "${kube_flags[@]}"
   kubectl delete rc/modified "${kube_flags[@]}"
@@ -517,9 +529,13 @@ run_pod_tests() {
   kube::test::get_object_assert pods "{{range.items}}{{$image_field}}:{{end}}" 'changed-with-yaml:'
   ## Patch pod from JSON can change image
   # Command
-  kubectl patch "${kube_flags[@]}" -f test/fixtures/doc-yaml/admin/limitrange/valid-pod.yaml -p='{"spec":{"containers":[{"name": "kubernetes-serve-hostname", "image": "k8s.gcr.io/pause:3.1"}]}}'
+  kubectl patch "${kube_flags[@]}" -f test/fixtures/doc-yaml/admin/limitrange/valid-pod.yaml -p='{"spec":{"containers":[{"name": "kubernetes-serve-hostname", "image": "k8s.gcr.io/pause:3.2"}]}}'
   # Post-condition: valid-pod POD has expected image
-  kube::test::get_object_assert pods "{{range.items}}{{$image_field}}:{{end}}" 'k8s.gcr.io/pause:3.1:'
+  kube::test::get_object_assert pods "{{range.items}}{{$image_field}}:{{end}}" 'k8s.gcr.io/pause:3.2:'
+
+  # pod has field for kubectl patch field manager
+  output_message=$(kubectl get pod valid-pod -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-patch'
 
   ## If resourceVersion is specified in the patch, it will be treated as a precondition, i.e., if the resourceVersion is different from that is stored in the server, the Patch should be rejected
   ERROR_FILE="${KUBE_TEMP}/conflict-error"
@@ -561,6 +577,10 @@ run_pod_tests() {
   # Post-condition: spec.container.name = "replaced-k8s-serve-hostname"
   kube::test::get_object_assert 'pod valid-pod' "{{(index .spec.containers 0).name}}" 'replaced-k8s-serve-hostname'
 
+  # Pod has field manager for kubectl replace
+  output_message=$(kubectl get pod valid-pod -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-replace'
+
   ## check replace --grace-period requires --force
   output_message=$(! kubectl replace "${kube_flags[@]}" --grace-period=1 -f /tmp/tmp-valid-pod.json 2>&1)
   kube::test::if_has_string "${output_message}" '\-\-grace-period must have \-\-force specified'
@@ -583,6 +603,34 @@ run_pod_tests() {
   }
 }
 __EOF__
+  kube::test::get_object_assert "node node-v1-test" "{{range.items}}{{if .metadata.annotations.a}}found{{end}}{{end}}:" ':'
+
+  # Dry-run command
+  kubectl replace --dry-run=server -f - "${kube_flags[@]}" << __EOF__
+{
+  "kind": "Node",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "node-v1-test",
+    "annotations": {"a":"b"},
+    "resourceVersion": "0"
+  }
+}
+__EOF__
+  kubectl replace --dry-run=client -f - "${kube_flags[@]}" << __EOF__
+{
+  "kind": "Node",
+  "apiVersion": "v1",
+  "metadata": {
+    "name": "node-v1-test",
+    "annotations": {"a":"b"},
+    "resourceVersion": "0"
+  }
+}
+__EOF__
+  kube::test::get_object_assert "node node-v1-test" "{{range.items}}{{if .metadata.annotations.a}}found{{end}}{{end}}:" ':'
+
+  # Command
   kubectl replace -f - "${kube_flags[@]}" << __EOF__
 {
   "kind": "Node",
@@ -607,6 +655,9 @@ __EOF__
   grep -q 'Patch:' <<< "$(EDITOR=/tmp/tmp-editor.sh kubectl edit "${kube_flags[@]}" pods/valid-pod --output-patch=true)"
   # Post-condition: valid-pod POD has image k8s.gcr.io/serve_hostname
   kube::test::get_object_assert pods "{{range.items}}{{$image_field}}:{{end}}" 'k8s.gcr.io/serve_hostname:'
+  # pod has field for kubectl edit field manager
+  output_message=$(kubectl get pod valid-pod -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-edit'
   # cleaning
   rm /tmp/tmp-editor.sh
 
@@ -723,21 +774,21 @@ run_create_secret_tests() {
     output_message=$(! kubectl get secrets mysecret 2>&1 "${kube_flags[@]}")
     kube::test::if_has_string "${output_message}" 'secrets "mysecret" not found'
     # Command
-    output_message=$(kubectl create "${kube_flags[@]}" secret generic mysecret --dry-run --from-literal=foo=bar -o jsonpath='{.metadata.namespace}' --namespace=user-specified)
+    output_message=$(kubectl create "${kube_flags[@]}" secret generic mysecret --dry-run=client --from-literal=foo=bar -o jsonpath='{.metadata.namespace}' --namespace=user-specified)
+    kube::test::if_has_string "${output_message}" 'user-specified'
     # Post-condition: mysecret still not created since --dry-run was used
     # Output from 'create' command should contain the specified --namespace value
     failure_message=$(! kubectl get secrets mysecret 2>&1 "${kube_flags[@]}")
     kube::test::if_has_string "${failure_message}" 'secrets "mysecret" not found'
-    kube::test::if_has_string "${output_message}" 'user-specified'
     # Command
-    output_message=$(kubectl create "${kube_flags[@]}" secret generic mysecret --dry-run --from-literal=foo=bar -o jsonpath='{.metadata.namespace}')
+    output_message=$(kubectl create "${kube_flags[@]}" secret generic mysecret --dry-run=client --from-literal=foo=bar -o jsonpath='{.metadata.namespace}')
     # Post-condition: jsonpath for .metadata.namespace should be empty for object since --namespace was not explicitly specified
     kube::test::if_empty_string "${output_message}"
 
 
     # check to make sure that replace correctly PUTs to a URL
     kubectl create configmap tester-update-cm -o json --dry-run=client | kubectl create "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps -f -
-    output_message=$(kubectl create configmap tester-update-cm --from-literal=key1=config1 -o json --dry-run | kubectl replace "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps/tester-update-cm -f -)
+    output_message=$(kubectl create configmap tester-update-cm --from-literal=key1=config1 -o json --dry-run=client | kubectl replace "${kube_flags[@]}" --raw /api/v1/namespaces/default/configmaps/tester-update-cm -f -)
     # the message should show the body returned which will include a UID not present in the input
     kube::test::if_has_string "${output_message}" 'uid'
     # if the PUT was well-formed, the server will now have a key and value we can retrieve on GET
@@ -761,7 +812,7 @@ run_secrets_test() {
   kube::log::status "Testing secrets"
 
   # Ensure dry run succeeds and includes kind, apiVersion and data, and doesn't require a server connection
-  output_message=$(kubectl create secret generic test --from-literal=key1=value1 --dry-run -o yaml --server=example.com --v=6)
+  output_message=$(kubectl create secret generic test --from-literal=key1=value1 --dry-run=client -o yaml --server=example.com --v=6)
   kube::test::if_has_string "${output_message}" 'kind: Secret'
   kube::test::if_has_string "${output_message}" 'apiVersion: v1'
   kube::test::if_has_string "${output_message}" 'key1: dmFsdWUx'
@@ -799,6 +850,21 @@ run_secrets_test() {
   kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$id_field}}" 'test-secret'
   kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$secret_type}}" 'kubernetes.io/dockerconfigjson'
   grep -q '.dockerconfigjson: eyJhdXRocyI6eyJodHRwczovL2luZGV4LmRvY2tlci5pby92MS8iOnsidXNlcm5hbWUiOiJ0ZXN0LXVzZXIiLCJwYXNzd29yZCI6InRlc3QtcGFzc3dvcmQiLCJlbWFpbCI6InRlc3QtdXNlckB0ZXN0LmNvbSIsImF1dGgiOiJkR1Z6ZEMxMWMyVnlPblJsYzNRdGNHRnpjM2R2Y21RPSJ9fX0=' <<< "$(kubectl get secret/test-secret --namespace=test-secrets -o yaml "${kube_flags[@]}")"
+  # Clean-up
+  kubectl delete secret test-secret --namespace=test-secrets
+
+  ### Create a docker-registry secret in a specific namespace with docker config file
+  if [[ "${WAIT_FOR_DELETION:-}" == "true" ]]; then
+    kube::test::wait_object_assert 'secrets --namespace=test-secrets' "{{range.items}}{{$id_field}}:{{end}}" ''
+  fi
+  # Pre-condition: no SECRET exists
+  kube::test::get_object_assert 'secrets --namespace=test-secrets' "{{range.items}}{{$id_field}}:{{end}}" ''
+  # Command
+  kubectl create secret docker-registry test-secret --from-file=.dockerconfigjson=hack/testdata/dockerconfig.json --namespace=test-secrets
+  # Post-condition: secret exists and has expected values
+  kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$id_field}}" 'test-secret'
+  kube::test::get_object_assert 'secret/test-secret --namespace=test-secrets' "{{$secret_type}}" 'kubernetes.io/dockerconfigjson'
+  grep -q '.dockerconfigjson: ewogICAgImF1dGhzIjp7CiAgICAgICAgImh0dHA6Ly9mb28uZXhhbXBsZS5jb20iOnsKICAgICAgICAgICAgInVzZXJuYW1lIjoiZm9vIiwKICAgICAgICAgICAgInBhc3N3b3JkIjoiYmFyIiwKICAgICAgICAgICAgImVtYWlsIjoiZm9vQGV4YW1wbGUuY29tIgogICAgICAgIH0sCiAgICAgICAgImh0dHA6Ly9iYXIuZXhhbXBsZS5jb20iOnsKICAgICAgICAgICAgInVzZXJuYW1lIjoiYmFyIiwKICAgICAgICAgICAgInBhc3N3b3JkIjoiYmF6IiwKICAgICAgICAgICAgImVtYWlsIjoiYmFyQGV4YW1wbGUuY29tIgogICAgICAgIH0KICAgIH0KfQo=' <<< "$(kubectl get secret/test-secret --namespace=test-secrets -o yaml "${kube_flags[@]}")"
   # Clean-up
   kubectl delete secret test-secret --namespace=test-secrets
 
@@ -936,7 +1002,7 @@ run_service_tests() {
 
   # Set selector of a local file without talking to the server
   kubectl set selector -f test/e2e/testing-manifests/guestbook/redis-master-service.yaml role=padawan --local -o yaml "${kube_flags[@]}"
-  kubectl set selector -f test/e2e/testing-manifests/guestbook/redis-master-service.yaml role=padawan --dry-run -o yaml "${kube_flags[@]}"
+  kubectl set selector -f test/e2e/testing-manifests/guestbook/redis-master-service.yaml role=padawan --dry-run=client -o yaml "${kube_flags[@]}"
   # Set command to change the selector.
   kubectl set selector -f test/e2e/testing-manifests/guestbook/redis-master-service.yaml role=padawan
   # prove role=padawan
@@ -948,6 +1014,8 @@ run_service_tests() {
   # Show dry-run works on running selector
   kubectl set selector services redis-master role=padawan --dry-run=client -o yaml "${kube_flags[@]}"
   kubectl set selector services redis-master role=padawan --dry-run=server -o yaml "${kube_flags[@]}"
+  output_message=$(kubectl get services redis-master -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-set'
   ! kubectl set selector services redis-master role=padawan --local -o yaml "${kube_flags[@]}" || exit 1
   kube::test::get_object_assert 'services redis-master' "{{range$service_selector_field}}{{.}}:{{end}}" "redis:master:backend:"
   # --resource-version=<current-resource-version> succeeds
@@ -1083,12 +1151,18 @@ __EOF__
   # Check result
   kube::test::get_object_assert pods "{{range.items}}{{$id_field}}:{{end}}" 'testmetadata:'
   kube::test::get_object_assert 'service testmetadata' "{{.metadata.annotations}}" "map\[zone-context:home\]"
+  # pod has field for kubectl run field manager
+  output_message=$(kubectl get pod testmetadata -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-run'
 
   ### Expose pod as a new service
   # Command
   kubectl expose pod testmetadata  --port=1000 --target-port=80 --type=NodePort --name=exposemetadata --overrides='{ "metadata": { "annotations": { "zone-context": "work" } } } '
   # Check result
   kube::test::get_object_assert 'service exposemetadata' "{{.metadata.annotations}}" "map\[zone-context:work\]"
+  # Service has field manager for kubectl expose
+  output_message=$(kubectl get service exposemetadata -o=jsonpath='{.metadata.managedFields[*].manager}' "${kube_flags[@]:?}" 2>&1)
+  kube::test::if_has_string "${output_message}" 'kubectl-expose'
 
   # Clean-Up
   # Command
@@ -1330,7 +1404,7 @@ run_rc_tests() {
   kube::test::get_object_assert deployment "{{range.items}}{{$id_field}}:{{end}}" ''
   # Set resources of a local file without talking to the server
   kubectl set resources -f hack/testdata/deployment-multicontainer-resources.yaml -c=perl --limits=cpu=300m --requests=cpu=300m --local -o yaml "${kube_flags[@]}"
-  ! kubectl set resources -f hack/testdata/deployment-multicontainer-resources.yaml -c=perl --limits=cpu=300m --requests=cpu=300m --dry-run -o yaml "${kube_flags[@]}" || exit 1
+  ! kubectl set resources -f hack/testdata/deployment-multicontainer-resources.yaml -c=perl --limits=cpu=300m --requests=cpu=300m --dry-run=client -o yaml "${kube_flags[@]}" || exit 1
   # Create a deployment
   kubectl create -f hack/testdata/deployment-multicontainer-resources.yaml "${kube_flags[@]}"
   kube::test::get_object_assert deployment "{{range.items}}{{$id_field}}:{{end}}" 'nginx-deployment-resources:'
@@ -1352,7 +1426,8 @@ run_rc_tests() {
   kube::test::get_object_assert deployment "{{range.items}}{{(index .spec.template.spec.containers 1).resources.limits.cpu}}:{{end}}" "300m:"
   kube::test::get_object_assert deployment "{{range.items}}{{(index .spec.template.spec.containers 1).resources.requests.cpu}}:{{end}}" "300m:"
   # Show dry-run works on running deployments
-  kubectl set resources deployment nginx-deployment-resources -c=perl --limits=cpu=400m --requests=cpu=400m --dry-run -o yaml "${kube_flags[@]}"
+  kubectl set resources deployment nginx-deployment-resources -c=perl --limits=cpu=400m --requests=cpu=400m --dry-run=client -o yaml "${kube_flags[@]}"
+  kubectl set resources deployment nginx-deployment-resources -c=perl --limits=cpu=400m --requests=cpu=400m --dry-run=server -o yaml "${kube_flags[@]}"
   ! kubectl set resources deployment nginx-deployment-resources -c=perl --limits=cpu=400m --requests=cpu=400m --local -o yaml "${kube_flags[@]}" || exit 1
   kube::test::get_object_assert deployment "{{range.items}}{{(index .spec.template.spec.containers 0).resources.limits.cpu}}:{{end}}" "200m:"
   kube::test::get_object_assert deployment "{{range.items}}{{(index .spec.template.spec.containers 1).resources.limits.cpu}}:{{end}}" "300m:"

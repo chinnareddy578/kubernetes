@@ -144,11 +144,10 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		var err error
 
 		e2enode.WaitForTotalHealthy(cs, time.Minute)
-		_, nodeList, err = e2enode.GetMasterAndWorkerNodes(cs)
+		nodeList, err = e2enode.GetReadySchedulableNodes(cs)
 		if err != nil {
 			framework.Logf("Unexpected error occurred: %v", err)
 		}
-		// TODO: write a wrapper for ExpectNoErrorWithOffset()
 		framework.ExpectNoErrorWithOffset(0, err)
 
 		err = framework.CheckTestingNSDeletedExcept(cs, ns)
@@ -233,7 +232,7 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 			},
 		})
 		ginkgo.By("Wait the pod becomes running")
-		framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
+		framework.ExpectNoError(e2epod.WaitForPodNameRunningInNamespace(f.ClientSet, pod.Name, f.Namespace.Name))
 		labelPod, err := cs.CoreV1().Pods(ns).Get(context.TODO(), labelPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
 		ginkgo.By("Verify the pod was scheduled to the expected node.")
@@ -315,14 +314,14 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 		for i := 0; i < 10; i++ {
 			testTaint := addRandomTaintToNode(cs, nodeName)
 			tolerations = append(tolerations, v1.Toleration{Key: testTaint.Key, Value: testTaint.Value, Effect: testTaint.Effect})
-			defer framework.RemoveTaintOffNode(cs, nodeName, *testTaint)
+			defer e2enode.RemoveTaintOffNode(cs, nodeName, *testTaint)
 		}
 		ginkgo.By("Adding 10 intolerable taints to all other nodes")
 		for i := 1; i < len(nodeList.Items); i++ {
 			node := nodeList.Items[i]
 			for i := 0; i < 10; i++ {
 				testTaint := addRandomTaintToNode(cs, node.Name)
-				defer framework.RemoveTaintOffNode(cs, node.Name, *testTaint)
+				defer e2enode.RemoveTaintOffNode(cs, node.Name, *testTaint)
 			}
 		}
 
@@ -332,12 +331,102 @@ var _ = SIGDescribe("SchedulerPriorities [Serial]", func() {
 			Name:        tolerationPodName,
 			Tolerations: tolerations,
 		})
-		framework.ExpectNoError(f.WaitForPodRunning(pod.Name))
+		framework.ExpectNoError(e2epod.WaitForPodNameRunningInNamespace(f.ClientSet, pod.Name, f.Namespace.Name))
 
 		ginkgo.By("Pod should prefer scheduled to the node that pod can tolerate.")
 		tolePod, err := cs.CoreV1().Pods(ns).Get(context.TODO(), tolerationPodName, metav1.GetOptions{})
 		framework.ExpectNoError(err)
 		framework.ExpectEqual(tolePod.Spec.NodeName, nodeName)
+	})
+
+	ginkgo.Context("PodTopologySpread Scoring", func() {
+		var nodeNames []string
+		topologyKey := "kubernetes.io/e2e-pts-score"
+
+		ginkgo.BeforeEach(func() {
+			ginkgo.By("Trying to get 2 available nodes which can run pod")
+			nodeNames = Get2NodesThatCanRunPod(f)
+			ginkgo.By(fmt.Sprintf("Apply dedicated topologyKey %v for this test on the 2 nodes.", topologyKey))
+			for _, nodeName := range nodeNames {
+				framework.AddOrUpdateLabelOnNode(cs, nodeName, topologyKey, nodeName)
+			}
+		})
+		ginkgo.AfterEach(func() {
+			for _, nodeName := range nodeNames {
+				framework.RemoveLabelOffNode(cs, nodeName, topologyKey)
+			}
+		})
+
+		ginkgo.It("validates pod should be preferably scheduled to node which makes the matching pods more evenly distributed", func() {
+			var nodes []v1.Node
+			for _, nodeName := range nodeNames {
+				node, err := cs.CoreV1().Nodes().Get(context.TODO(), nodeName, metav1.GetOptions{})
+				framework.ExpectNoError(err)
+				nodes = append(nodes, *node)
+			}
+
+			// Make the nodes have balanced cpu,mem usage.
+			err := createBalancedPodForNodes(f, cs, ns, nodes, podRequestedResource, 0.5)
+			framework.ExpectNoError(err)
+
+			replicas := 4
+			podLabel := "e2e-pts-score"
+			ginkgo.By(fmt.Sprintf("Run a ReplicaSet with %v replicas on node %q", replicas, nodeNames[0]))
+			rsConfig := pauseRSConfig{
+				Replicas: int32(replicas),
+				PodConfig: pausePodConfig{
+					Name:         podLabel,
+					Namespace:    ns,
+					Labels:       map[string]string{podLabel: "foo"},
+					NodeSelector: map[string]string{topologyKey: nodeNames[0]},
+				},
+			}
+			runPauseRS(f, rsConfig)
+
+			// Run a Pod with WhenUnsatisfiable:ScheduleAnyway.
+			podCfg := pausePodConfig{
+				Name:      "test-pod",
+				Namespace: ns,
+				// The labels shouldn't match the preceding ReplicaSet, otherwise it will
+				// be claimed as orphan of the ReplicaSet.
+				Labels: map[string]string{podLabel: "bar"},
+				Affinity: &v1.Affinity{
+					NodeAffinity: &v1.NodeAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+							NodeSelectorTerms: []v1.NodeSelectorTerm{
+								{
+									MatchExpressions: []v1.NodeSelectorRequirement{
+										{
+											Key:      topologyKey,
+											Operator: v1.NodeSelectorOpIn,
+											Values:   nodeNames,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+				TopologySpreadConstraints: []v1.TopologySpreadConstraint{
+					{
+						MaxSkew:           1,
+						TopologyKey:       topologyKey,
+						WhenUnsatisfiable: v1.ScheduleAnyway,
+						LabelSelector: &metav1.LabelSelector{
+							MatchExpressions: []metav1.LabelSelectorRequirement{
+								{
+									Key:      podLabel,
+									Operator: metav1.LabelSelectorOpExists,
+								},
+							},
+						},
+					},
+				},
+			}
+			testPod := runPausePod(f, podCfg)
+			ginkgo.By(fmt.Sprintf("Verifying if the test-pod lands on node %q", nodeNames[1]))
+			framework.ExpectEqual(nodeNames[1], testPod.Spec.NodeName)
+		})
 	})
 })
 
@@ -376,16 +465,30 @@ func createBalancedPodForNodes(f *framework.Framework, cs clientset.Interface, n
 
 		needCreateResource[v1.ResourceMemory] = *resource.NewQuantity(int64((ratio-memFraction)*float64(memAllocatableVal)), resource.BinarySI)
 
-		err := testutils.StartPods(cs, 1, ns, string(uuid.NewUUID()),
-			*initPausePod(f, pausePodConfig{
-				Name:   "",
-				Labels: balancePodLabel,
-				Resources: &v1.ResourceRequirements{
-					Limits:   needCreateResource,
-					Requests: needCreateResource,
+		podConfig := &pausePodConfig{
+			Name:   "",
+			Labels: balancePodLabel,
+			Resources: &v1.ResourceRequirements{
+				Limits:   needCreateResource,
+				Requests: needCreateResource,
+			},
+			Affinity: &v1.Affinity{
+				NodeAffinity: &v1.NodeAffinity{
+					RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
+						NodeSelectorTerms: []v1.NodeSelectorTerm{
+							{
+								MatchFields: []v1.NodeSelectorRequirement{
+									{Key: "metadata.name", Operator: v1.NodeSelectorOpIn, Values: []string{node.Name}},
+								},
+							},
+						},
+					},
 				},
-				NodeName: node.Name,
-			}), true, framework.Logf)
+			},
+		}
+
+		err := testutils.StartPods(cs, 1, ns, string(uuid.NewUUID()),
+			*initPausePod(f, *podConfig), true, framework.Logf)
 
 		if err != nil {
 			return err
@@ -491,7 +594,7 @@ func addRandomTaintToNode(cs clientset.Interface, nodeName string) *v1.Taint {
 		Value:  fmt.Sprintf("testing-taint-value-%s", string(uuid.NewUUID())),
 		Effect: v1.TaintEffectPreferNoSchedule,
 	}
-	framework.AddOrUpdateTaintOnNode(cs, nodeName, testTaint)
+	e2enode.AddOrUpdateTaintOnNode(cs, nodeName, testTaint)
 	framework.ExpectNodeHasTaint(cs, nodeName, &testTaint)
 	return &testTaint
 }

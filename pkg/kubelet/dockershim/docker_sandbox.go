@@ -1,3 +1,5 @@
+// +build !dockerless
+
 /*
 Copyright 2016 The Kubernetes Authors.
 
@@ -29,7 +31,7 @@ import (
 	dockerfilters "github.com/docker/docker/api/types/filters"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager"
 	"k8s.io/kubernetes/pkg/kubelet/checkpointmanager/errors"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -38,7 +40,7 @@ import (
 )
 
 const (
-	defaultSandboxImage = "k8s.gcr.io/pause:3.1"
+	defaultSandboxImage = "k8s.gcr.io/pause:3.2"
 
 	// Various default sandbox resources requests/limits.
 	defaultSandboxCPUshares int64 = 2
@@ -253,7 +255,7 @@ func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopP
 	// This depends on the implementation detail of network plugin and proper error handling.
 	// For kubenet, if tearing down network failed and sandbox container is stopped, kubelet
 	// will retry. On retry, kubenet will not be able to retrieve network namespace of the sandbox
-	// since it is stopped. With empty network namespcae, CNI bridge plugin will conduct best
+	// since it is stopped. With empty network namespace, CNI bridge plugin will conduct best
 	// effort clean up and will not return error.
 	errList := []error{}
 	ready, ok := ds.getNetworkReady(podSandboxID)
@@ -657,10 +659,7 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	}
 
 	// Set security options.
-	securityOpts, err := ds.getSecurityOpts(c.GetLinux().GetSecurityContext().GetSeccompProfilePath(), securityOptSeparator)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate sandbox security options for sandbox %q: %v", c.Metadata.Name, err)
-	}
+	securityOpts := ds.getSandBoxSecurityOpts(securityOptSeparator)
 	hc.SecurityOpt = append(hc.SecurityOpt, securityOpts...)
 
 	applyExperimentalCreateConfig(createConfig, c.Annotations)

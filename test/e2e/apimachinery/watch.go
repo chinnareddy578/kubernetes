@@ -22,7 +22,7 @@ import (
 	"math/rand"
 	"time"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,6 +46,7 @@ var _ = SIGDescribe("Watchers", func() {
 	f := framework.NewDefaultFramework("watch")
 
 	/*
+		    Release: v1.11
 		    Testname: watch-configmaps-with-multiple-watchers
 		    Description: Ensure that multiple watchers are able to receive all add,
 			update, and delete notifications on configmaps that match a label selector and do
@@ -110,7 +111,7 @@ var _ = SIGDescribe("Watchers", func() {
 		expectNoEvent(watchB, watch.Modified, testConfigMapA)
 
 		ginkgo.By("deleting configmap A and ensuring the correct watchers observe the notification")
-		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMapA.GetName(), nil)
+		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMapA.GetName(), metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "failed to delete configmap %s in namespace: %s", testConfigMapA.GetName(), ns)
 		expectEvent(watchA, watch.Deleted, nil)
 		expectEvent(watchAB, watch.Deleted, nil)
@@ -124,7 +125,7 @@ var _ = SIGDescribe("Watchers", func() {
 		expectNoEvent(watchA, watch.Added, testConfigMapB)
 
 		ginkgo.By("deleting configmap B and ensuring the correct watchers observe the notification")
-		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMapB.GetName(), nil)
+		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMapB.GetName(), metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "failed to delete configmap %s in namespace: %s", testConfigMapB.GetName(), ns)
 		expectEvent(watchB, watch.Deleted, nil)
 		expectEvent(watchAB, watch.Deleted, nil)
@@ -132,6 +133,7 @@ var _ = SIGDescribe("Watchers", func() {
 	})
 
 	/*
+		    Release: v1.11
 		    Testname: watch-configmaps-from-resource-version
 		    Description: Ensure that a watch can be opened from a particular resource version
 			in the past and only notifications happening after that resource version are observed.
@@ -166,7 +168,7 @@ var _ = SIGDescribe("Watchers", func() {
 		framework.ExpectNoError(err, "failed to update configmap %s in namespace %s a second time", testConfigMap.GetName(), ns)
 
 		ginkgo.By("deleting the configmap")
-		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMap.GetName(), nil)
+		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMap.GetName(), metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "failed to delete configmap %s in namespace: %s", testConfigMap.GetName(), ns)
 
 		ginkgo.By("creating a watch on configmaps from the resource version returned by the first update")
@@ -179,6 +181,7 @@ var _ = SIGDescribe("Watchers", func() {
 	})
 
 	/*
+		    Release: v1.11
 		    Testname: watch-configmaps-closed-and-restarted
 		    Description: Ensure that a watch can be reopened from the last resource version
 			observed by the previous watch, and it will continue delivering notifications from
@@ -235,7 +238,7 @@ var _ = SIGDescribe("Watchers", func() {
 		framework.ExpectNoError(err, "failed to create a new watch on configmaps from the last resource version %s observed by the first watch", lastEventConfigMap.ObjectMeta.ResourceVersion)
 
 		ginkgo.By("deleting the configmap")
-		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMap.GetName(), nil)
+		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMap.GetName(), metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "failed to delete configmap %s in namespace: %s", configMapName, ns)
 
 		ginkgo.By("Expecting to observe notifications for all changes to the configmap since the first watch closed")
@@ -244,6 +247,7 @@ var _ = SIGDescribe("Watchers", func() {
 	})
 
 	/*
+		    Release: v1.11
 		    Testname: watch-configmaps-label-changed
 		    Description: Ensure that a watched object stops meeting the requirements of
 			a watch's selector, the watch will observe a delete, and will not observe
@@ -310,7 +314,7 @@ var _ = SIGDescribe("Watchers", func() {
 		framework.ExpectNoError(err, "failed to update configmap %s in namespace %s a third time", configMapName, ns)
 
 		ginkgo.By("deleting the configmap")
-		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMap.GetName(), nil)
+		err = c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), testConfigMap.GetName(), metav1.DeleteOptions{})
 		framework.ExpectNoError(err, "failed to delete configmap %s in namespace: %s", configMapName, ns)
 
 		ginkgo.By("Expecting to observe an add notification for the watched object when the label value was restored")
@@ -320,8 +324,8 @@ var _ = SIGDescribe("Watchers", func() {
 	})
 
 	/*
+	   Release: v1.15
 	   Testname: watch-consistency
-	   Release : v1.15
 	   Description: Ensure that concurrent watches are consistent with each other by initiating an additional watch
 	   for events received from the first watch, initiated at the resource version of the event, and checking that all
 	   resource versions of all events match. Events are produced from writes on a background goroutine.
@@ -482,7 +486,7 @@ func produceConfigMapEvents(f *framework.Framework, stopc <-chan struct{}, minWa
 			framework.ExpectNoError(err, "Failed to update configmap %s in namespace %s", cm.Name, ns)
 		case deleteEvent:
 			idx := rand.Intn(len(existing))
-			err := c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), name(existing[idx]), &metav1.DeleteOptions{})
+			err := c.CoreV1().ConfigMaps(ns).Delete(context.TODO(), name(existing[idx]), metav1.DeleteOptions{})
 			framework.ExpectNoError(err, "Failed to delete configmap %s in namespace %s", name(existing[idx]), ns)
 			existing = append(existing[:idx], existing[idx+1:]...)
 		default:

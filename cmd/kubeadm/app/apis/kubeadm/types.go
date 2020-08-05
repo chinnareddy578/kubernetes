@@ -17,8 +17,11 @@ limitations under the License.
 package kubeadm
 
 import (
+	"crypto/x509"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/kubernetes/cmd/kubeadm/app/features"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
@@ -400,6 +403,15 @@ func (cfg *ClusterConfiguration) GetControlPlaneImageRepository() string {
 	return cfg.ImageRepository
 }
 
+// PublicKeyAlgorithm returns the type of encryption keys used in the cluster.
+func (cfg *ClusterConfiguration) PublicKeyAlgorithm() x509.PublicKeyAlgorithm {
+	if features.Enabled(cfg.FeatureGates, features.PublicKeysECDSA) {
+		return x509.ECDSA
+	}
+
+	return x509.RSA
+}
+
 // HostPathMount contains elements describing volumes that are mounted from the
 // host.
 type HostPathMount struct {
@@ -432,7 +444,13 @@ type ComponentConfig interface {
 	Unmarshal(docmap DocumentMap) error
 
 	// Default patches the component config with kubeadm preferred defaults
-	Default(cfg *ClusterConfiguration, localAPIEndpoint *APIEndpoint)
+	Default(cfg *ClusterConfiguration, localAPIEndpoint *APIEndpoint, nodeRegOpts *NodeRegistrationOptions)
+
+	// IsUserSupplied indicates if the component config was supplied or modified by a user or was kubeadm generated
+	IsUserSupplied() bool
+
+	// SetUserSupplied sets the state of the component config "user supplied" flag to, either true, or false.
+	SetUserSupplied(userSupplied bool)
 }
 
 // ComponentConfigMap is a map between a group name (as in GVK group) and a ComponentConfig

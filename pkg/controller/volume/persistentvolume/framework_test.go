@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 	storage "k8s.io/api/storage/v1"
@@ -348,6 +348,17 @@ func newVolumeArray(name, capacity, boundToClaimUID, boundToClaimName string, ph
 	}
 }
 
+func withVolumeDeletionTimestamp(pvs []*v1.PersistentVolume) []*v1.PersistentVolume {
+	result := []*v1.PersistentVolume{}
+	for _, pv := range pvs {
+		// Using time.Now() here will cause mismatching deletion timestamps in tests
+		deleteTime := metav1.Date(2020, time.February, 18, 10, 30, 30, 10, time.UTC)
+		pv.SetDeletionTimestamp(&deleteTime)
+		result = append(result, pv)
+	}
+	return result
+}
+
 // newClaim returns a new claim with given attributes
 func newClaim(name, claimUID, capacity, boundToVolume string, phase v1.PersistentVolumeClaimPhase, class *string, annotations ...string) *v1.PersistentVolumeClaim {
 	fs := v1.PersistentVolumeFilesystem
@@ -646,6 +657,7 @@ func runSyncTests(t *testing.T, tests []controllerTest, storageClasses []*storag
 		podIndexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
 		for _, pod := range pods {
 			podIndexer.Add(pod)
+			ctrl.podIndexer.Add(pod)
 		}
 		ctrl.podLister = corelisters.NewPodLister(podIndexer)
 
@@ -758,7 +770,7 @@ func runMultisyncTests(t *testing.T, tests []controllerTest, storageClasses []*s
 				if err != nil {
 					if err == pvtesting.ErrVersionConflict {
 						// Ignore version errors
-						klog.V(4).Infof("test intentionaly ignores version error.")
+						klog.V(4).Infof("test intentionally ignores version error.")
 					} else {
 						t.Errorf("Error calling syncClaim: %v", err)
 						// Finish the loop on the first error
@@ -775,7 +787,7 @@ func runMultisyncTests(t *testing.T, tests []controllerTest, storageClasses []*s
 				if err != nil {
 					if err == pvtesting.ErrVersionConflict {
 						// Ignore version errors
-						klog.V(4).Infof("test intentionaly ignores version error.")
+						klog.V(4).Infof("test intentionally ignores version error.")
 					} else {
 						t.Errorf("Error calling syncVolume: %v", err)
 						// Finish the loop on the first error

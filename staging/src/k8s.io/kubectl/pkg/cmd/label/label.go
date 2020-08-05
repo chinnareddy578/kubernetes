@@ -23,7 +23,7 @@ import (
 
 	jsonpatch "github.com/evanphx/json-patch"
 	"github.com/spf13/cobra"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -62,6 +62,7 @@ type LabelOptions struct {
 	selector        string
 	fieldSelector   string
 	outputFormat    string
+	fieldManager    string
 
 	// results of arg parsing
 	resources    []string
@@ -150,6 +151,7 @@ func NewCmdLabel(f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobr
 	usage := "identifying the resource to update the labels"
 	cmdutil.AddFilenameOptionFlags(cmd, &o.FilenameOptions, usage)
 	cmdutil.AddDryRunFlag(cmd)
+	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-label")
 
 	return cmd
 }
@@ -211,6 +213,9 @@ func (o *LabelOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []st
 
 // Validate checks to the LabelOptions to see if there is sufficient information run the command.
 func (o *LabelOptions) Validate() error {
+	if o.local && o.dryRunStrategy == cmdutil.DryRunServer {
+		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
+	}
 	if o.all && len(o.selector) > 0 {
 		return fmt.Errorf("cannot set --all and --selector at the same time")
 	}
@@ -331,7 +336,8 @@ func (o *LabelOptions) RunLabel() error {
 				return err
 			}
 			helper := resource.NewHelper(client, mapping).
-				DryRun(o.dryRunStrategy == cmdutil.DryRunServer)
+				DryRun(o.dryRunStrategy == cmdutil.DryRunServer).
+				WithFieldManager(o.fieldManager)
 
 			if createdPatch {
 				outputObj, err = helper.Patch(namespace, name, types.MergePatchType, patchBytes, nil)
@@ -356,7 +362,7 @@ func (o *LabelOptions) RunLabel() error {
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(o.ErrOut, "Listing labels for %s.%s/%s:\n", gvks[0].Kind, gvks[0].Group, info.Name)
+				fmt.Fprintf(o.Out, "Listing labels for %s.%s/%s:\n", gvks[0].Kind, gvks[0].Group, info.Name)
 			}
 			for k, v := range accessor.GetLabels() {
 				fmt.Fprintf(o.Out, "%s%s=%s\n", indent, k, v)

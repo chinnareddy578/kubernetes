@@ -48,7 +48,7 @@ var (
 	kubectl set subject rolebinding admin --user=user1 --user=user2 --group=group1
 
 	# Print the result (in yaml format) of updating rolebinding subjects from a local, without hitting the server
-	kubectl create rolebinding admin --role=admin --user=admin -o yaml --dry-run | kubectl set subject --local -f - --user=foo -o yaml`)
+	kubectl create rolebinding admin --role=admin --user=admin -o yaml --dry-run=client | kubectl set subject --local -f - --user=foo -o yaml`)
 )
 
 type updateSubjects func(existings []rbacv1.Subject, targets []rbacv1.Subject) (bool, []rbacv1.Subject)
@@ -68,6 +68,7 @@ type SubjectOptions struct {
 	DryRunStrategy    cmdutil.DryRunStrategy
 	DryRunVerifier    *resource.DryRunVerifier
 	Local             bool
+	fieldManager      string
 
 	Users           []string
 	Groups          []string
@@ -93,7 +94,7 @@ func NewSubjectOptions(streams genericclioptions.IOStreams) *SubjectOptions {
 func NewCmdSubject(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.Command {
 	o := NewSubjectOptions(streams)
 	cmd := &cobra.Command{
-		Use:                   "subject (-f FILENAME | TYPE NAME) [--user=username] [--group=groupname] [--serviceaccount=namespace:serviceaccountname] [--dry-run]",
+		Use:                   "subject (-f FILENAME | TYPE NAME) [--user=username] [--group=groupname] [--serviceaccount=namespace:serviceaccountname] [--dry-run=server|client|none]",
 		DisableFlagsInUseLine: true,
 		Short:                 i18n.T("Update User, Group or ServiceAccount in a RoleBinding/ClusterRoleBinding"),
 		Long:                  subjectLong,
@@ -115,6 +116,7 @@ func NewCmdSubject(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobr
 	cmd.Flags().StringArrayVar(&o.Users, "user", o.Users, "Usernames to bind to the role")
 	cmd.Flags().StringArrayVar(&o.Groups, "group", o.Groups, "Groups to bind to the role")
 	cmd.Flags().StringArrayVar(&o.ServiceAccounts, "serviceaccount", o.ServiceAccounts, "Service accounts to bind to the role")
+	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-set")
 	return cmd
 }
 
@@ -181,6 +183,9 @@ func (o *SubjectOptions) Complete(f cmdutil.Factory, cmd *cobra.Command, args []
 
 // Validate makes sure provided values in SubjectOptions are valid
 func (o *SubjectOptions) Validate() error {
+	if o.Local && o.DryRunStrategy == cmdutil.DryRunServer {
+		return fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?")
+	}
 	if o.All && len(o.Selector) > 0 {
 		return fmt.Errorf("cannot set --all and --selector at the same time")
 	}
@@ -278,6 +283,7 @@ func (o *SubjectOptions) Run(fn updateSubjects) error {
 		actual, err := resource.
 			NewHelper(info.Client, info.Mapping).
 			DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
+			WithFieldManager(o.fieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
 			allErrs = append(allErrs, fmt.Errorf("failed to patch subjects to rolebinding: %v", err))

@@ -43,7 +43,7 @@ import (
 	commontest "k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2econfig "k8s.io/kubernetes/test/e2e/framework/config"
-	"k8s.io/kubernetes/test/e2e/framework/testfiles"
+	e2etestfiles "k8s.io/kubernetes/test/e2e/framework/testfiles"
 	"k8s.io/kubernetes/test/e2e/generated"
 	"k8s.io/kubernetes/test/e2e_node/services"
 	system "k8s.io/system-validators/validators"
@@ -53,7 +53,7 @@ import (
 	morereporters "github.com/onsi/ginkgo/reporters"
 	"github.com/onsi/gomega"
 	"github.com/spf13/pflag"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 var e2es *services.E2EServices
@@ -80,11 +80,12 @@ func registerNodeFlags(flags *flag.FlagSet) {
 	flags.StringVar(&framework.TestContext.ImageDescription, "image-description", "", "The description of the image which the test will be running on.")
 	flags.StringVar(&framework.TestContext.SystemSpecName, "system-spec-name", "", "The name of the system spec (e.g., gke) that's used in the node e2e test. The system specs are in test/e2e_node/system/specs/. This is used by the test framework to determine which tests to run for validating the system requirements.")
 	flags.Var(cliflag.NewMapStringString(&framework.TestContext.ExtraEnvs), "extra-envs", "The extra environment variables needed for node e2e tests. Format: a list of key=value pairs, e.g., env1=val1,env2=val2")
+	flags.StringVar(&framework.TestContext.SriovdpConfigMapFile, "sriovdp-configmap-file", "", "The name of the SRIOV device plugin Config Map to load.")
 }
 
 func init() {
 	// Enable bindata file lookup as fallback.
-	testfiles.AddFileSource(testfiles.BindataFileSource{
+	e2etestfiles.AddFileSource(e2etestfiles.BindataFileSource{
 		Asset:      generated.Asset,
 		AssetNames: generated.AssetNames,
 	})
@@ -178,7 +179,7 @@ var _ = ginkgo.SynchronizedBeforeSuite(func() []byte {
 	// This helps with debugging test flakes since it is hard to tell when a test failure is due to image pulling.
 	if framework.TestContext.PrepullImages {
 		klog.Infof("Pre-pulling images so that they are cached for the tests.")
-		updateImageWhiteList()
+		updateImageAllowList()
 		err := PrePullAllImages()
 		gomega.Expect(err).ShouldNot(gomega.HaveOccurred())
 	}
@@ -278,7 +279,7 @@ func waitForNodeReady() {
 // update test context with node configuration.
 func updateTestContext() error {
 	setExtraEnvs()
-	updateImageWhiteList()
+	updateImageAllowList()
 
 	client, err := getAPIServerClient()
 	if err != nil {

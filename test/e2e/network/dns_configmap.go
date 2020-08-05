@@ -26,7 +26,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/test/e2e/framework"
 	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
-	e2eskipper "k8s.io/kubernetes/test/e2e/framework/skipper"
 
 	"github.com/onsi/ginkgo"
 )
@@ -58,7 +57,7 @@ var _ = SIGDescribe("DNS configMap federations [Feature:Federation]", func() {
 func (t *dnsFederationsConfigMapTest) run() {
 	t.init()
 
-	defer t.c.CoreV1().ConfigMaps(t.ns).Delete(context.TODO(), t.name, nil)
+	defer t.c.CoreV1().ConfigMaps(t.ns).Delete(context.TODO(), t.name, metav1.DeleteOptions{})
 	t.createUtilPodLabel("e2e-dns-configmap")
 	defer t.deleteUtilPod()
 	originalConfigMapData := t.fetchDNSConfigMapData()
@@ -74,7 +73,6 @@ func (t *dnsFederationsConfigMapTest) run() {
         ready
         kubernetes %v in-addr.arpa ip6.arpa {
             pods insecure
-            upstream
             fallthrough in-addr.arpa ip6.arpa
             ttl 30
         }
@@ -91,7 +89,6 @@ func (t *dnsFederationsConfigMapTest) run() {
         ready
         kubernetes %v in-addr.arpa ip6.arpa {
             pods insecure
-            upstream
             fallthrough in-addr.arpa ip6.arpa
             ttl 30
         }
@@ -221,13 +218,13 @@ func (t *dnsNameserverTest) run(isIPv6 bool) {
 	defer t.restoreDNSConfigMap(originalConfigMapData)
 
 	if isIPv6 {
-		t.createDNSServer(map[string]string{
+		t.createDNSServer(t.f.Namespace.Name, map[string]string{
 			"abc.acme.local": "2606:4700:4700::1111",
 			"def.acme.local": "2606:4700:4700::2222",
 			"widget.local":   "2606:4700:4700::3333",
 		})
 	} else {
-		t.createDNSServer(map[string]string{
+		t.createDNSServer(t.f.Namespace.Name, map[string]string{
 			"abc.acme.local": "1.1.1.1",
 			"def.acme.local": "2.2.2.2",
 			"widget.local":   "3.3.3.3",
@@ -242,7 +239,6 @@ func (t *dnsNameserverTest) run(isIPv6 bool) {
         ready
         kubernetes %v in-addr.arpa ip6.arpa {
            pods insecure
-           upstream
            fallthrough in-addr.arpa ip6.arpa
            ttl 30
         }
@@ -317,7 +313,7 @@ func (t *dnsPtrFwdTest) run(isIPv6 bool) {
 	originalConfigMapData := t.fetchDNSConfigMapData()
 	defer t.restoreDNSConfigMap(originalConfigMapData)
 
-	t.createDNSServerWithPtrRecord(isIPv6)
+	t.createDNSServerWithPtrRecord(t.f.Namespace.Name, isIPv6)
 	defer t.deleteDNSServerPod()
 
 	// Should still be able to lookup public nameserver without explicit upstream nameserver set.
@@ -342,7 +338,6 @@ func (t *dnsPtrFwdTest) run(isIPv6 bool) {
         ready
         kubernetes %v in-addr.arpa ip6.arpa {
            pods insecure
-           upstream
            fallthrough in-addr.arpa ip6.arpa
            ttl 30
         }
@@ -401,11 +396,11 @@ func (t *dnsExternalNameTest) run(isIPv6 bool) {
 
 	fooHostname := "foo.example.com"
 	if isIPv6 {
-		t.createDNSServer(map[string]string{
+		t.createDNSServer(t.f.Namespace.Name, map[string]string{
 			fooHostname: "2001:db8::29",
 		})
 	} else {
-		t.createDNSServer(map[string]string{
+		t.createDNSServer(t.f.Namespace.Name, map[string]string{
 			fooHostname: "192.0.2.123",
 		})
 	}
@@ -425,8 +420,8 @@ func (t *dnsExternalNameTest) run(isIPv6 bool) {
 	defer func() {
 		ginkgo.By("deleting the test externalName service")
 		defer ginkgo.GinkgoRecover()
-		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(context.TODO(), externalNameService.Name, nil)
-		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(context.TODO(), externalNameServiceLocal.Name, nil)
+		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(context.TODO(), externalNameService.Name, metav1.DeleteOptions{})
+		f.ClientSet.CoreV1().Services(f.Namespace.Name).Delete(context.TODO(), externalNameServiceLocal.Name, metav1.DeleteOptions{})
 	}()
 
 	if isIPv6 {
@@ -454,7 +449,6 @@ func (t *dnsExternalNameTest) run(isIPv6 bool) {
         ready
         kubernetes %v in-addr.arpa ip6.arpa {
            pods insecure
-           upstream
            fallthrough in-addr.arpa ip6.arpa
            ttl 30
         }
@@ -489,14 +483,14 @@ func (t *dnsExternalNameTest) run(isIPv6 bool) {
 	t.restoreDNSConfigMap(originalConfigMapData)
 }
 
-var _ = SIGDescribe("DNS configMap nameserver [IPv4]", func() {
+var _ = SIGDescribe("DNS configMap nameserver", func() {
 
 	ginkgo.Context("Change stubDomain", func() {
 		nsTest := &dnsNameserverTest{dnsTestCommon: newDNSTestCommon()}
 
 		ginkgo.It("should be able to change stubDomain configuration [Slow][Serial]", func() {
 			nsTest.c = nsTest.f.ClientSet
-			nsTest.run(false)
+			nsTest.run(framework.TestContext.ClusterIsIPv6())
 		})
 	})
 
@@ -505,7 +499,7 @@ var _ = SIGDescribe("DNS configMap nameserver [IPv4]", func() {
 
 		ginkgo.It("should forward PTR records lookup to upstream nameserver [Slow][Serial]", func() {
 			fwdTest.c = fwdTest.f.ClientSet
-			fwdTest.run(false)
+			fwdTest.run(framework.TestContext.ClusterIsIPv6())
 		})
 	})
 
@@ -514,42 +508,7 @@ var _ = SIGDescribe("DNS configMap nameserver [IPv4]", func() {
 
 		ginkgo.It("should forward externalname lookup to upstream nameserver [Slow][Serial]", func() {
 			externalNameTest.c = externalNameTest.f.ClientSet
-			externalNameTest.run(false)
-		})
-	})
-})
-
-var _ = SIGDescribe("DNS configMap nameserver [Feature:Networking-IPv6] [LinuxOnly]", func() {
-
-	ginkgo.BeforeEach(func() {
-		// IPv6 is not supported on Windows.
-		e2eskipper.SkipIfNodeOSDistroIs("windows")
-	})
-
-	ginkgo.Context("Change stubDomain", func() {
-		nsTest := &dnsNameserverTest{dnsTestCommon: newDNSTestCommon()}
-
-		ginkgo.It("should be able to change stubDomain configuration [Slow][Serial]", func() {
-			nsTest.c = nsTest.f.ClientSet
-			nsTest.run(true)
-		})
-	})
-
-	ginkgo.Context("Forward PTR lookup", func() {
-		fwdTest := &dnsPtrFwdTest{dnsTestCommon: newDNSTestCommon()}
-
-		ginkgo.It("should forward PTR records lookup to upstream nameserver [Slow][Serial]", func() {
-			fwdTest.c = fwdTest.f.ClientSet
-			fwdTest.run(true)
-		})
-	})
-
-	ginkgo.Context("Forward external name lookup", func() {
-		externalNameTest := &dnsExternalNameTest{dnsTestCommon: newDNSTestCommon()}
-
-		ginkgo.It("should forward externalname lookup to upstream nameserver [Slow][Serial]", func() {
-			externalNameTest.c = externalNameTest.f.ClientSet
-			externalNameTest.run(true)
+			externalNameTest.run(framework.TestContext.ClusterIsIPv6())
 		})
 	})
 })

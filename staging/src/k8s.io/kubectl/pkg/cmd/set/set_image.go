@@ -20,7 +20,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,6 +52,7 @@ type SetImageOptions struct {
 	Output         string
 	Local          bool
 	ResolveImage   ImageResolver
+	fieldManager   string
 
 	PrintObj printers.ResourcePrinterFunc
 	Recorder genericclioptions.Recorder
@@ -125,6 +126,7 @@ func NewCmdImage(f cmdutil.Factory, streams genericclioptions.IOStreams) *cobra.
 	cmd.Flags().StringVarP(&o.Selector, "selector", "l", o.Selector, "Selector (label query) to filter on, not including uninitialized ones, supports '=', '==', and '!='.(e.g. -l key1=value1,key2=value2)")
 	cmd.Flags().BoolVar(&o.Local, "local", o.Local, "If true, set image will NOT contact api-server but run locally.")
 	cmdutil.AddDryRunFlag(cmd)
+	cmdutil.AddFieldManagerFlagVar(cmd, &o.fieldManager, "kubectl-set")
 	return cmd
 }
 
@@ -216,6 +218,9 @@ func (o *SetImageOptions) Validate() error {
 	} else if len(o.ContainerImages) > 1 && hasWildcardKey(o.ContainerImages) {
 		errors = append(errors, fmt.Errorf("all containers are already specified by *, but saw more than one container_name=container_image pairs"))
 	}
+	if o.Local && o.DryRunStrategy == cmdutil.DryRunServer {
+		errors = append(errors, fmt.Errorf("cannot specify --local and --dry-run=server - did you mean --dry-run=client?"))
+	}
 	return utilerrors.NewAggregate(errors)
 }
 
@@ -283,6 +288,7 @@ func (o *SetImageOptions) Run() error {
 		actual, err := resource.
 			NewHelper(info.Client, info.Mapping).
 			DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
+			WithFieldManager(o.fieldManager).
 			Patch(info.Namespace, info.Name, types.StrategicMergePatchType, patch.Patch, nil)
 		if err != nil {
 			allErrs = append(allErrs, fmt.Errorf("failed to patch image update to pod template: %v", err))

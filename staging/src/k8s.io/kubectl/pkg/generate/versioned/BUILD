@@ -40,12 +40,14 @@ go_library(
         "//staging/src/k8s.io/apimachinery/pkg/runtime:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/runtime/schema:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/intstr:go_default_library",
+        "//staging/src/k8s.io/apimachinery/pkg/util/rand:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/sets:go_default_library",
         "//staging/src/k8s.io/apimachinery/pkg/util/validation:go_default_library",
         "//staging/src/k8s.io/client-go/discovery:go_default_library",
         "//staging/src/k8s.io/kubectl/pkg/generate:go_default_library",
         "//staging/src/k8s.io/kubectl/pkg/util:go_default_library",
         "//staging/src/k8s.io/kubectl/pkg/util/hash:go_default_library",
+        "//vendor/k8s.io/utils/net:go_default_library",
     ],
 )
 
