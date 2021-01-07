@@ -474,6 +474,7 @@ func (m *kubeGenericRuntimeManager) getPodContainerStatuses(uid kubetypes.UID, n
 				cStatus.Message += tMessage
 			}
 		}
+		cStatus.PodSandboxID = c.PodSandboxId
 		statuses[i] = cStatus
 	}
 
@@ -658,6 +659,7 @@ func (m *kubeGenericRuntimeManager) killContainersWithSyncResult(pod *v1.Pod, ru
 			killContainerResult := kubecontainer.NewSyncResult(kubecontainer.KillContainer, container.Name)
 			if err := m.killContainer(pod, container.ID, container.Name, "", gracePeriodOverride); err != nil {
 				killContainerResult.Fail(kubecontainer.ErrKillContainer, err.Error())
+				klog.Errorf("killContainer %q(id=%q) for pod %q failed: %v", container.Name, container.ID, format.Pod(pod), err)
 			}
 			containerResults <- killContainerResult
 		}(container)
@@ -740,6 +742,18 @@ func (m *kubeGenericRuntimeManager) purgeInitContainers(pod *v1.Pod, podStatus *
 func findNextInitContainerToRun(pod *v1.Pod, podStatus *kubecontainer.PodStatus) (status *kubecontainer.Status, next *v1.Container, done bool) {
 	if len(pod.Spec.InitContainers) == 0 {
 		return nil, nil, true
+	}
+
+	// If any of the main containers have status and are Running, then all init containers must
+	// have been executed at some point in the past.  However, they could have been removed
+	// from the container runtime now, and if we proceed, it would appear as if they
+	// never ran and will re-execute improperly.
+	for i := range pod.Spec.Containers {
+		container := &pod.Spec.Containers[i]
+		status := podStatus.FindContainerStatusByName(container.Name)
+		if status != nil && status.State == kubecontainer.ContainerStateRunning {
+			return nil, nil, true
+		}
 	}
 
 	// If there are failed containers, return the status of the last failed one.
@@ -855,19 +869,19 @@ func (m *kubeGenericRuntimeManager) removeContainer(containerID string) error {
 
 // removeContainerLog removes the container log.
 func (m *kubeGenericRuntimeManager) removeContainerLog(containerID string) error {
-	// Remove the container log.
+	// Use log manager to remove rotated logs.
+	err := m.logManager.Clean(containerID)
+	if err != nil {
+		return err
+	}
+
 	status, err := m.runtimeService.ContainerStatus(containerID)
 	if err != nil {
 		return fmt.Errorf("failed to get container status %q: %v", containerID, err)
 	}
-	labeledInfo := getContainerInfoFromLabels(status.Labels)
-	path := status.GetLogPath()
-	if err := m.osInterface.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove container %q log %q: %v", containerID, path, err)
-	}
-
 	// Remove the legacy container log symlink.
 	// TODO(random-liu): Remove this after cluster logging supports CRI container log path.
+	labeledInfo := getContainerInfoFromLabels(status.Labels)
 	legacySymlink := legacyLogSymlink(containerID, labeledInfo.ContainerName, labeledInfo.PodName,
 		labeledInfo.PodNamespace)
 	if err := m.osInterface.Remove(legacySymlink); err != nil && !os.IsNotExist(err) {

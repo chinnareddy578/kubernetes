@@ -27,10 +27,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/kubernetes/pkg/apis/discovery/validation"
 	endpointutil "k8s.io/kubernetes/pkg/controller/util/endpoint"
+	"k8s.io/kubernetes/pkg/features"
 )
 
 // addrTypePortMapKey is used to uniquely identify groups of endpoint ports and
@@ -138,6 +140,9 @@ func addressToEndpoint(address corev1.EndpointAddress, ready bool) *discovery.En
 		endpoint.Topology = map[string]string{
 			"kubernetes.io/hostname": *address.NodeName,
 		}
+		if utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceNodeName) {
+			endpoint.NodeName = address.NodeName
+		}
 	}
 	if address.Hostname != "" {
 		endpoint.Hostname = &address.Hostname
@@ -185,14 +190,35 @@ func objectRefPtrEqual(ref1, ref2 *corev1.ObjectReference) bool {
 	return true
 }
 
+// getServiceFromDeleteAction parses a Service resource from a delete
+// action.
+func getServiceFromDeleteAction(obj interface{}) *corev1.Service {
+	if service, ok := obj.(*corev1.Service); ok {
+		return service
+	}
+	// If we reached here it means the Service was deleted but its final state
+	// is unrecorded.
+	tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
+	if !ok {
+		utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v", obj))
+		return nil
+	}
+	service, ok := tombstone.Obj.(*corev1.Service)
+	if !ok {
+		utilruntime.HandleError(fmt.Errorf("Tombstone contained object that is not a Service resource: %#v", obj))
+		return nil
+	}
+	return service
+}
+
 // getEndpointsFromDeleteAction parses an Endpoints resource from a delete
 // action.
 func getEndpointsFromDeleteAction(obj interface{}) *corev1.Endpoints {
-	if endpointSlice, ok := obj.(*corev1.Endpoints); ok {
-		return endpointSlice
+	if endpoints, ok := obj.(*corev1.Endpoints); ok {
+		return endpoints
 	}
-	// If we reached here it means the EndpointSlice was deleted but its final
-	// state is unrecorded.
+	// If we reached here it means the Endpoints resource was deleted but its
+	// final state is unrecorded.
 	tombstone, ok := obj.(cache.DeletedFinalStateUnknown)
 	if !ok {
 		utilruntime.HandleError(fmt.Errorf("Couldn't get object from tombstone %#v", obj))
@@ -239,7 +265,7 @@ func endpointsControllerKey(endpointSlice *discovery.EndpointSlice) (string, err
 	return fmt.Sprintf("%s/%s", endpointSlice.Namespace, serviceName), nil
 }
 
-// skipMirror return true if the the LabelSkipMirror label has been set to
+// skipMirror return true if the LabelSkipMirror label has been set to
 // "true".
 func skipMirror(labels map[string]string) bool {
 	skipMirror, _ := labels[discovery.LabelSkipMirror]

@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"strconv"
 
 	v1 "k8s.io/api/core/v1"
@@ -119,6 +120,16 @@ func IsProxyableHostname(ctx context.Context, resolv Resolver, hostname string) 
 	for _, host := range resp {
 		if err := isProxyableIP(host.IP); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// IsAllowedHost checks if the given IP host address is in a network in the denied list.
+func IsAllowedHost(host net.IP, denied []*net.IPNet) error {
+	for _, ipNet := range denied {
+		if ipNet.Contains(host) {
+			return ErrAddressNotAllowed
 		}
 	}
 	return nil
@@ -244,26 +255,64 @@ func LogAndEmitIncorrectIPVersionEvent(recorder record.EventRecorder, fieldName,
 	}
 }
 
-// FilterIncorrectIPVersion filters out the incorrect IP version case from a slice of IP strings.
-func FilterIncorrectIPVersion(ipStrings []string, isIPv6Mode bool) ([]string, []string) {
-	return filterWithCondition(ipStrings, isIPv6Mode, utilnet.IsIPv6String)
-}
-
-// FilterIncorrectCIDRVersion filters out the incorrect IP version case from a slice of CIDR strings.
-func FilterIncorrectCIDRVersion(ipStrings []string, isIPv6Mode bool) ([]string, []string) {
-	return filterWithCondition(ipStrings, isIPv6Mode, utilnet.IsIPv6CIDRString)
-}
-
-func filterWithCondition(strs []string, expectedCondition bool, conditionFunc func(string) bool) ([]string, []string) {
-	var corrects, incorrects []string
-	for _, str := range strs {
-		if conditionFunc(str) != expectedCondition {
-			incorrects = append(incorrects, str)
+// MapIPsByIPFamily maps a slice of IPs to their respective IP families (v4 or v6)
+func MapIPsByIPFamily(ipStrings []string) map[v1.IPFamily][]string {
+	ipFamilyMap := map[v1.IPFamily][]string{}
+	for _, ip := range ipStrings {
+		// Handle only the valid IPs
+		if ipFamily, err := getIPFamilyFromIP(ip); err == nil {
+			ipFamilyMap[ipFamily] = append(ipFamilyMap[ipFamily], ip)
 		} else {
-			corrects = append(corrects, str)
+			klog.Errorf("Skipping invalid IP: %s", ip)
 		}
 	}
-	return corrects, incorrects
+	return ipFamilyMap
+}
+
+// MapCIDRsByIPFamily maps a slice of IPs to their respective IP families (v4 or v6)
+func MapCIDRsByIPFamily(cidrStrings []string) map[v1.IPFamily][]string {
+	ipFamilyMap := map[v1.IPFamily][]string{}
+	for _, cidr := range cidrStrings {
+		// Handle only the valid CIDRs
+		if ipFamily, err := getIPFamilyFromCIDR(cidr); err == nil {
+			ipFamilyMap[ipFamily] = append(ipFamilyMap[ipFamily], cidr)
+		} else {
+			klog.Errorf("Skipping invalid cidr: %s", cidr)
+		}
+	}
+	return ipFamilyMap
+}
+
+func getIPFamilyFromIP(ipStr string) (v1.IPFamily, error) {
+	netIP := net.ParseIP(ipStr)
+	if netIP == nil {
+		return "", ErrAddressNotAllowed
+	}
+
+	if utilnet.IsIPv6(netIP) {
+		return v1.IPv6Protocol, nil
+	}
+	return v1.IPv4Protocol, nil
+}
+
+func getIPFamilyFromCIDR(cidrStr string) (v1.IPFamily, error) {
+	_, netCIDR, err := net.ParseCIDR(cidrStr)
+	if err != nil {
+		return "", ErrAddressNotAllowed
+	}
+	if utilnet.IsIPv6CIDR(netCIDR) {
+		return v1.IPv6Protocol, nil
+	}
+	return v1.IPv4Protocol, nil
+}
+
+// OtherIPFamily returns the other ip family
+func OtherIPFamily(ipFamily v1.IPFamily) v1.IPFamily {
+	if ipFamily == v1.IPv6Protocol {
+		return v1.IPv4Protocol
+	}
+
+	return v1.IPv6Protocol
 }
 
 // AppendPortIfNeeded appends the given port to IP address unless it is already in
@@ -310,4 +359,85 @@ func EnsureSysctl(sysctl utilsysctl.Interface, name string, newVal int) error {
 		klog.V(1).Infof("Changed sysctl %q: %d -> %d", name, oldVal, newVal)
 	}
 	return nil
+}
+
+// DialContext is a dial function matching the signature of net.Dialer.DialContext.
+type DialContext = func(context.Context, string, string) (net.Conn, error)
+
+// FilteredDialOptions configures how a DialContext is wrapped by NewFilteredDialContext.
+type FilteredDialOptions struct {
+	// DialHostIPDenylist restricts hosts from being dialed.
+	DialHostCIDRDenylist []*net.IPNet
+	// AllowLocalLoopback controls connections to local loopback hosts (as defined by
+	// IsProxyableIP).
+	AllowLocalLoopback bool
+}
+
+// NewFilteredDialContext returns a DialContext function that filters connections based on a FilteredDialOptions.
+func NewFilteredDialContext(wrapped DialContext, resolv Resolver, opts *FilteredDialOptions) DialContext {
+	if wrapped == nil {
+		wrapped = http.DefaultTransport.(*http.Transport).DialContext
+	}
+	if opts == nil {
+		// Do no filtering
+		return wrapped
+	}
+	if resolv == nil {
+		resolv = net.DefaultResolver
+	}
+	if len(opts.DialHostCIDRDenylist) == 0 && opts.AllowLocalLoopback {
+		// Do no filtering.
+		return wrapped
+	}
+	return func(ctx context.Context, network, address string) (net.Conn, error) {
+		resp, err := resolv.LookupIPAddr(ctx, address)
+		if err != nil {
+			return nil, err
+		}
+
+		if len(resp) == 0 {
+			return nil, ErrNoAddresses
+		}
+
+		for _, host := range resp {
+			if !opts.AllowLocalLoopback {
+				if err := isProxyableIP(host.IP); err != nil {
+					return nil, err
+				}
+			}
+			if opts.DialHostCIDRDenylist != nil {
+				if err := IsAllowedHost(host.IP, opts.DialHostCIDRDenylist); err != nil {
+					return nil, err
+				}
+			}
+		}
+		return wrapped(ctx, network, address)
+	}
+}
+
+// GetClusterIPByFamily returns a service clusterip by family
+func GetClusterIPByFamily(ipFamily v1.IPFamily, service *v1.Service) string {
+	// allowing skew
+	if len(service.Spec.IPFamilies) == 0 {
+		if len(service.Spec.ClusterIP) == 0 || service.Spec.ClusterIP == v1.ClusterIPNone {
+			return ""
+		}
+
+		IsIPv6Family := (ipFamily == v1.IPv6Protocol)
+		if IsIPv6Family == utilnet.IsIPv6String(service.Spec.ClusterIP) {
+			return service.Spec.ClusterIP
+		}
+
+		return ""
+	}
+
+	for idx, family := range service.Spec.IPFamilies {
+		if family == ipFamily {
+			if idx < len(service.Spec.ClusterIPs) {
+				return service.Spec.ClusterIPs[idx]
+			}
+		}
+	}
+
+	return ""
 }

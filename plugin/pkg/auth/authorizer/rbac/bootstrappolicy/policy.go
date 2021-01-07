@@ -153,6 +153,10 @@ func NodeRules() []rbacv1.PolicyRule {
 
 		// CSI
 		rbacv1helpers.NewRule("get").Groups(storageGroup).Resources("volumeattachments").RuleOrDie(),
+
+		// Use the Node authorization to limit a node to create tokens for service accounts running on that node
+		// Use the NodeRestriction admission plugin to limit a node to create tokens bound to pods on that node
+		rbacv1helpers.NewRule("create").Groups(legacyGroup).Resources("serviceaccounts/token").RuleOrDie(),
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(features.ExpandPersistentVolumes) {
@@ -162,25 +166,14 @@ func NodeRules() []rbacv1.PolicyRule {
 		nodePolicyRules = append(nodePolicyRules, pvcStatusPolicyRule)
 	}
 
-	if utilfeature.DefaultFeatureGate.Enabled(features.TokenRequest) {
-		// Use the Node authorization to limit a node to create tokens for service accounts running on that node
-		// Use the NodeRestriction admission plugin to limit a node to create tokens bound to pods on that node
-		tokenRequestRule := rbacv1helpers.NewRule("create").Groups(legacyGroup).Resources("serviceaccounts/token").RuleOrDie()
-		nodePolicyRules = append(nodePolicyRules, tokenRequestRule)
-	}
-
 	// CSI
 	csiDriverRule := rbacv1helpers.NewRule("get", "watch", "list").Groups("storage.k8s.io").Resources("csidrivers").RuleOrDie()
 	nodePolicyRules = append(nodePolicyRules, csiDriverRule)
-	if utilfeature.DefaultFeatureGate.Enabled(features.CSINodeInfo) {
-		csiNodeInfoRule := rbacv1helpers.NewRule("get", "create", "update", "patch", "delete").Groups("storage.k8s.io").Resources("csinodes").RuleOrDie()
-		nodePolicyRules = append(nodePolicyRules, csiNodeInfoRule)
-	}
+	csiNodeInfoRule := rbacv1helpers.NewRule("get", "create", "update", "patch", "delete").Groups("storage.k8s.io").Resources("csinodes").RuleOrDie()
+	nodePolicyRules = append(nodePolicyRules, csiNodeInfoRule)
 
 	// RuntimeClass
-	if utilfeature.DefaultFeatureGate.Enabled(features.RuntimeClass) {
-		nodePolicyRules = append(nodePolicyRules, rbacv1helpers.NewRule("get", "list", "watch").Groups("node.k8s.io").Resources("runtimeclasses").RuleOrDie())
-	}
+	nodePolicyRules = append(nodePolicyRules, rbacv1helpers.NewRule("get", "list", "watch").Groups("node.k8s.io").Resources("runtimeclasses").RuleOrDie())
 	return nodePolicyRules
 }
 
@@ -196,7 +189,8 @@ func ClusterRoles() []rbacv1.ClusterRole {
 			},
 		},
 		{
-			// a role which provides just enough power to determine if the server is ready and discover API versions for negotiation
+			// a role which provides just enough power to determine if the server is
+			// ready and discover API versions for negotiation
 			ObjectMeta: metav1.ObjectMeta{Name: "system:discovery"},
 			Rules: []rbacv1.PolicyRule{
 				rbacv1helpers.NewRule("get").URLs(
@@ -205,6 +199,20 @@ func ClusterRoles() []rbacv1.ClusterRole {
 					"/openapi", "/openapi/*",
 					"/api", "/api/*",
 					"/apis", "/apis/*",
+				).RuleOrDie(),
+			},
+		},
+		{
+			// a role which provides minimal read access to the monitoring endpoints
+			// (i.e. /metrics, /livez/*, /readyz/*, /healthz/*, /livez, /readyz, /healthz)
+			// The splatted health check endpoints allow read access to individual health check
+			// endpoints which may contain more sensitive cluster information information
+			ObjectMeta: metav1.ObjectMeta{Name: "system:monitoring"},
+			Rules: []rbacv1.PolicyRule{
+				rbacv1helpers.NewRule("get").URLs(
+					"/metrics",
+					"/livez", "/readyz", "/healthz",
+					"/livez/*", "/readyz/*", "/healthz/*",
 				).RuleOrDie(),
 			},
 		},
@@ -563,6 +571,7 @@ const systemNodeRoleName = "system:node"
 func ClusterRoleBindings() []rbacv1.ClusterRoleBinding {
 	rolebindings := []rbacv1.ClusterRoleBinding{
 		rbacv1helpers.NewClusterBinding("cluster-admin").Groups(user.SystemPrivilegedGroup).BindingOrDie(),
+		rbacv1helpers.NewClusterBinding("system:monitoring").Groups(user.MonitoringGroup).BindingOrDie(),
 		rbacv1helpers.NewClusterBinding("system:discovery").Groups(user.AllAuthenticated).BindingOrDie(),
 		rbacv1helpers.NewClusterBinding("system:basic-user").Groups(user.AllAuthenticated).BindingOrDie(),
 		rbacv1helpers.NewClusterBinding("system:public-info-viewer").Groups(user.AllAuthenticated, user.AllUnauthenticated).BindingOrDie(),
